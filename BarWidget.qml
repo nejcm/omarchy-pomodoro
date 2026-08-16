@@ -155,7 +155,7 @@ BarWidget {
         printErrors: false
         onLoaded: root.history = Model.parseHistory(text(), 50)
         onLoadFailed: root.history = []
-        onSaveFailed: console.warn("pomodoro: history save failed", error)
+        onSaveFailed: function (error) { console.warn("pomodoro: history save failed", error) }
     }
 
     function persistHistory() {
