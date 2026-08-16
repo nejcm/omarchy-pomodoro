@@ -42,7 +42,8 @@ function countToday(history, nowMs) {
     return count;
 }
 
-function parseHistory(text) {
+function parseHistory(text, cap) {
+    if (typeof cap !== "number" || !isFinite(cap) || cap < 0) cap = 50;
     if (typeof text !== "string" || text.length === 0) return [];
     var data;
     try {
@@ -53,11 +54,12 @@ function parseHistory(text) {
     if (!data || typeof data !== "object" || !Array.isArray(data.sessions)) return [];
 
     var out = [];
-    for (var i = 0; i < data.sessions.length; i++) {
+    for (var i = 0; i < data.sessions.length && out.length < cap; i++) {
         var e = data.sessions[i];
         if (!e || typeof e !== "object") continue;
         if (typeof e.startedAt !== "number" || !isFinite(e.startedAt)) continue;
         if (typeof e.minutes !== "number" || !isFinite(e.minutes)) continue;
+        if (Math.floor(e.minutes) !== e.minutes || e.minutes < 1) continue;
         out.push({ startedAt: e.startedAt, minutes: e.minutes });
     }
     return out;

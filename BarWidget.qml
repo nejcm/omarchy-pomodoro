@@ -38,6 +38,11 @@ BarWidget {
     // Epoch milliseconds (~1.77e12 today) overflows QML's 32-bit int
     // (max ~2.15e9) — must be double, not int.
     property double sessionStartedAt: 0
+    // Duration in effect for the in-progress session, snapshotted at start()
+    // so a mid-session durationMinutes edit can't retroactively relabel the
+    // history row or notification for a session that already ran at the old
+    // duration (plan section 4: duration changes apply "on the next session").
+    property int sessionMinutes: 0
 
     readonly property bool idle: !started
     readonly property bool paused: started && !running
@@ -55,6 +60,7 @@ BarWidget {
         if (!started) {
             started = true
             sessionStartedAt = Date.now()
+            sessionMinutes = durationMinutes
             // Break remainingSeconds' initial live binding to durationMinutes
             // right away, so a shell.json edit in the sub-second window
             // before the first tick can't yank time from this session.
@@ -82,7 +88,7 @@ BarWidget {
     }
 
     function complete() {
-        history = Model.pushSession(history, { startedAt: sessionStartedAt, minutes: durationMinutes }, 50)
+        history = Model.pushSession(history, { startedAt: sessionStartedAt, minutes: sessionMinutes }, 50)
         persistHistory()
         if (notifyEnabled) sendCompletionNotification()
         reset()
@@ -100,12 +106,13 @@ BarWidget {
     }
 
     // --- notification -------------------------------------------------
-    // Arguments are literals plus an integer (durationMinutes, clamped
-    // 1..180 by Model.clampMinutes) — never free text — so there's no
+    // Arguments are literals plus an integer (sessionMinutes, snapshotted
+    // from durationMinutes -- already clamped 1..180 by Model.clampMinutes
+    // -- at session start) — never free text — so there's no
     // shell-quoting hole through bar.run's single command string.
     function sendCompletionNotification() {
         if (!root.bar) return
-        var minutes = Math.round(root.durationMinutes)
+        var minutes = Math.round(root.sessionMinutes)
         var cmd = "notify-send -a Pomodoro -u normal \"Pomodoro complete\" \"" + minutes + " minute session done\""
         root.bar.run(cmd)
     }
@@ -146,8 +153,9 @@ BarWidget {
         watchChanges: false
         atomicWrites: true
         printErrors: false
-        onLoaded: root.history = Model.parseHistory(text())
+        onLoaded: root.history = Model.parseHistory(text(), 50)
         onLoadFailed: root.history = []
+        onSaveFailed: console.warn("pomodoro: history save failed", error)
     }
 
     function persistHistory() {

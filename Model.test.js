@@ -98,6 +98,30 @@ assert.deepStrictEqual(M.parseHistory('"str"'), []);
 assert.deepStrictEqual(M.parseHistory('{"__proto__":{"polluted":1}}'), []);
 assert.strictEqual({}.polluted, undefined);
 
+// -- parseHistory: cap --
+(function () {
+    var sessions = [];
+    for (var i = 10; i >= 1; i--) sessions.push({ startedAt: i, minutes: 25 });
+    var text = JSON.stringify({ version: 1, sessions: sessions });
+    var capped = M.parseHistory(text, 3);
+    assert.strictEqual(capped.length, 3);
+    // newest-first order preserved, entries beyond cap dropped
+    assert.deepStrictEqual(capped, [{ startedAt: 10, minutes: 25 }, { startedAt: 9, minutes: 25 }, { startedAt: 8, minutes: 25 }]);
+    // default cap (omitted) is 50, not unbounded
+    var many = [];
+    for (var j = 100; j >= 1; j--) many.push({ startedAt: j, minutes: 25 });
+    var defaultCapped = M.parseHistory(JSON.stringify({ version: 1, sessions: many }));
+    assert.strictEqual(defaultCapped.length, 50);
+    assert.strictEqual(defaultCapped[0].startedAt, 100);
+})();
+
+// -- parseHistory: minutes integer/>=1 guard, no upper bound --
+assert.deepStrictEqual(M.parseHistory('{"sessions":[{"startedAt":1,"minutes":-3.5}]}'), []); // negative
+assert.deepStrictEqual(M.parseHistory('{"sessions":[{"startedAt":1,"minutes":0}]}'), []); // below 1
+assert.deepStrictEqual(M.parseHistory('{"sessions":[{"startedAt":1,"minutes":1.5}]}'), []); // non-integer
+assert.deepStrictEqual(M.parseHistory('{"sessions":[{"startedAt":1,"minutes":1}]}'), [{ startedAt: 1, minutes: 1 }]); // lower bound ok
+assert.deepStrictEqual(M.parseHistory('{"sessions":[{"startedAt":1,"minutes":999}]}'), [{ startedAt: 1, minutes: 999 }]); // no upper bound
+
 // -- serialize/parse round trip --
 (function () {
     var history = [{ startedAt: 1762772400000, minutes: 25 }, { startedAt: 1762770000000, minutes: 25 }];
