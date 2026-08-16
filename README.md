@@ -1,6 +1,6 @@
 # Pomodoro (`io.github.nejcm.pomodoro`)
 
-Omarchy Quickshell bar widget. Tomato glyph while idle; the glyph is replaced
+Omarchy Quickshell bar widget. Hourglass glyph while idle; the glyph is replaced
 by a live `mm:ss` countdown while running, dimmed while paused. Click it to
 open a panel with play/pause, reset, and a log of completed sessions below.
 
@@ -49,7 +49,7 @@ confirm against `~/.config/omarchy/shell.json` or a built-in entry such as
 
 ## Usage
 
-- Idle: tomato glyph in the bar.
+- Idle: hourglass glyph in the bar.
 - Running: glyph is replaced by a `mm:ss` countdown; paused shows the same
   text at reduced opacity.
 - Click the widget to open the panel: play/pause and reset controls above,
@@ -64,5 +64,9 @@ confirm against `~/.config/omarchy/shell.json` or a built-in entry such as
 Stored at `~/.local/state/omarchy/pomodoro.json`. A running (or paused)
 timer does **not** survive a shell restart — only completed-session history
 persists.
+
+Multi-monitor: each bar surface runs its own timer and whole-file-writes
+history on completion, so a dual-head setup can produce duplicate or
+last-writer-wins history entries. See improvements.md.
 
 `preview.png` is pending a screenshot on real hardware.

@@ -1,6 +1,6 @@
 # Plan — `io.github.nejcm.pomodoro`
 
-An Omarchy Quattro bar widget: tomato glyph when idle, live countdown when
+An Omarchy Quattro bar widget: hourglass glyph when idle, live countdown when
 running. Clicking it opens a panel with play/pause/reset above and a list of
 completed sessions below.
 
@@ -17,7 +17,7 @@ Reached by interview; recorded so nothing is silently re-litigated.
 |---|---|---|---|
 | 1 | Scope | Single countdown timer, default 25 min | Full work/break cycle state machine — different state model, 3× the code, deferred to `improvements.md` |
 | 2 | Kinds | `["bar-widget"]` only; `Panel.qml` loaded by the widget via `Loader` | Declaring `panel` as a second kind — built-ins (`omarchy.clock`) don't, and the bar tracks the *widget* as the panel identity |
-| 3 | Bar idle | Nerd Font tomato glyph | Emoji `🍅` — color-emoji rendering in the bar is font-dependent and won't inherit `bar.foreground` |
+| 3 | Bar idle | Nerd Font hourglass glyph (`nf-fa-hourglass_half`, U+F252) — revised during build; no tomato glyph exists in Nerd Fonts v3, and a clock face would collide with `omarchy.clock` on the same bar | Emoji `🍅` — color-emoji rendering in the bar is font-dependent and won't inherit `bar.foreground` |
 | 4 | Bar running | `24:59` **replaces** the glyph; paused = same text at reduced opacity | Glyph + countdown together (bar space), blinking (noise) |
 | 5 | Clock model | Countdown over `remainingSeconds`, ticked by a `Timer` | Target-epoch model — makes pause awkward for no gain, since we don't survive restarts |
 | 6 | Restart survival | History persists; a *running* timer dies with the shell | `service` kind + `keepLoaded` to resume — an extra entry point for a rare event |
@@ -268,7 +268,7 @@ running timer → Escape closes → disable → re-enable → remove.
    (`setText` / adapter / `blockWrites`) is not. Fallback if it fights back:
    `bar.run("…")` shelling the JSON out through a `cat > file` — uglier, and
    only if the QML path doesn't work.
-3. **Tomato glyph codepoint.** Depends on the bar's Nerd Font build. Picked
+3. **Hourglass glyph codepoint.** Depends on the bar's Nerd Font build. Picked
    from the Nerd Font set; swap the literal if it renders as tofu.
 4. **Panel routing contract.** The `opened`/`open`/`close` trio must sit on
    the *widget* root, not the panel, or the bar's popout coordinator won't

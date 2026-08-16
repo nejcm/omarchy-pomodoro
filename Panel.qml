@@ -39,7 +39,7 @@ Panel {
 
   // ---- glyphs, plan risk 3 ---------------------------------------------
   // Classic Font Awesome block (codepoints U+F0xx through U+F2xx) -- the
-  // same range BarWidget.qml's tomato glyph and this omarchy tree's own
+  // same range BarWidget.qml's hourglass glyph and this omarchy tree's own
   // Tray.qml (pin/hide) and SystemUpdate.qml (refresh) glyphs use,
   // confirmed intact in Nerd Fonts v3 unlike the deleted legacy MDI range
   // (0xF500-0xFD46). fa-play (0xF04B), fa-pause (0xF04C) and fa-undo

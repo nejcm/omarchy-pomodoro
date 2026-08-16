@@ -21,3 +21,11 @@ decision table.
   history is a flat log.
 - **History grouped by day** — history is currently a flat newest-first list;
   grouping is a panel rendering change, not a data model change.
+- **Multi-monitor: one timer per bar instance** — a bar surface exists per
+  monitor, so two monitors run two independent timers and both
+  whole-file-write the history (last writer wins). Upgrade path is a
+  `service` kind + `keepLoaded` owning one timer (reopens decision 6).
+- **Persistence: whole-file rewrite per completion** — no cross-instance
+  merge; each completed session rewrites the entire history file rather than
+  appending, so concurrent writers (see multi-monitor above) can clobber
+  each other's rows (plan section 8).
