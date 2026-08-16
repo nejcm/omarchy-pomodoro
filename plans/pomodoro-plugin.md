@@ -17,7 +17,7 @@ Reached by interview; recorded so nothing is silently re-litigated.
 |---|---|---|---|
 | 1 | Scope | Single countdown timer, default 25 min | Full work/break cycle state machine — different state model, 3× the code, deferred to `improvements.md` |
 | 2 | Kinds | `["bar-widget"]` only; `Panel.qml` loaded by the widget via `Loader` | Declaring `panel` as a second kind — built-ins (`omarchy.clock`) don't, and the bar tracks the *widget* as the panel identity |
-| 3 | Bar idle | Nerd Font hourglass glyph (`nf-fa-hourglass_half`, U+F252) — revised during build; no tomato glyph exists in Nerd Fonts v3, and a clock face would collide with `omarchy.clock` on the same bar | Emoji `🍅` — color-emoji rendering in the bar is font-dependent and won't inherit `bar.foreground` |
+| 3 | Bar idle | Nerd Font hourglass glyph (`nf-fa-hourglass_half`, U+F252) — revised during build; no tomato in the classic FA block this plugin draws from, block confirmed v3-safe, codepoint confirmed against two primary sources, and a clock face would collide with `omarchy.clock` on the same bar | Emoji `🍅` — color-emoji rendering in the bar is font-dependent and won't inherit `bar.foreground` |
 | 4 | Bar running | `24:59` **replaces** the glyph; paused = same text at reduced opacity | Glyph + countdown together (bar space), blinking (noise) |
 | 5 | Clock model | Countdown over `remainingSeconds`, ticked by a `Timer` | Target-epoch model — makes pause awkward for no gain, since we don't survive restarts |
 | 6 | Restart survival | History persists; a *running* timer dies with the shell | `service` kind + `keepLoaded` to resume — an extra entry point for a rare event |
@@ -128,7 +128,7 @@ Derived:
 ```
 idle      = !started
 paused    = started && !running
-barText   = idle ? TOMATO_GLYPH : mmss(remainingSeconds)
+barText   = idle ? idleGlyph : mmss(remainingSeconds)
 barOpacity= paused ? 0.6 : 1.0
 todayCount= history.filter(sameLocalDay(now)).length
 ```
