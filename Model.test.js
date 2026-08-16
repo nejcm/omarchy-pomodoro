@@ -12,18 +12,18 @@ assert.strictEqual(M.mmss(61), "01:01");
 assert.strictEqual(M.mmss(1500), "25:00");
 assert.strictEqual(M.mmss(3600), "60:00"); // no wrap past 60 min
 
-// -- clampMinutes --
-assert.strictEqual(M.clampMinutes(0, 25), 25);
-assert.strictEqual(M.clampMinutes(1, 25), 1);
-assert.strictEqual(M.clampMinutes(180, 25), 180);
-assert.strictEqual(M.clampMinutes(181, 25), 25);
-assert.strictEqual(M.clampMinutes("abc", 25), 25);
-assert.strictEqual(M.clampMinutes(null, 25), 25);
-assert.strictEqual(M.clampMinutes(undefined, 25), 25);
-assert.strictEqual(M.clampMinutes(NaN, 25), 25);
-assert.strictEqual(M.clampMinutes(25.7, 25), 26); // rounds
-assert.strictEqual(M.clampMinutes(0.6, 25), 25); // raw value below range, not promoted by rounding
-assert.strictEqual(M.clampMinutes(180.4, 25), 25); // raw value above range, not promoted by rounding
+// -- validMinutesOr --
+assert.strictEqual(M.validMinutesOr(0, 25), 25);
+assert.strictEqual(M.validMinutesOr(1, 25), 1);
+assert.strictEqual(M.validMinutesOr(180, 25), 180);
+assert.strictEqual(M.validMinutesOr(181, 25), 25); // falls back, does NOT clamp to 180
+assert.strictEqual(M.validMinutesOr("abc", 25), 25);
+assert.strictEqual(M.validMinutesOr(null, 25), 25);
+assert.strictEqual(M.validMinutesOr(undefined, 25), 25);
+assert.strictEqual(M.validMinutesOr(NaN, 25), 25);
+assert.strictEqual(M.validMinutesOr(25.7, 25), 26); // rounds
+assert.strictEqual(M.validMinutesOr(0.6, 25), 25); // raw value below range, not promoted by rounding
+assert.strictEqual(M.validMinutesOr(180.4, 25), 25); // raw value above range, not promoted by rounding
 
 // -- pushSession --
 (function () {
@@ -42,6 +42,23 @@ assert.strictEqual(M.clampMinutes(180.4, 25), 25); // raw value above range, not
     assert.strictEqual(trimmed.length, 2);
     assert.deepStrictEqual(trimmed, [{ startedAt: 10, minutes: 25 }, { startedAt: 9, minutes: 25 }]);
     assert.strictEqual(full.length, 2); // input untouched
+
+    // omitted cap defaults to HISTORY_CAP, matching parseHistory's read-side
+    // limit -- the write path must not be able to store more than the read
+    // path will load back
+    var over = [];
+    for (var k = 0; k < M.HISTORY_CAP + 10; k++) over.push({ startedAt: k, minutes: 25 });
+    assert.strictEqual(M.pushSession(over, { startedAt: 999, minutes: 25 }).length, M.HISTORY_CAP);
+    assert.strictEqual(M.pushSession(over, { startedAt: 999, minutes: 25 })[0].startedAt, 999);
+})();
+
+// -- HISTORY_CAP: read and write paths agree --
+assert.strictEqual(M.HISTORY_CAP, 50);
+(function () {
+    var many = [];
+    for (var i = 0; i < M.HISTORY_CAP + 10; i++) many.push({ startedAt: i + 1, minutes: 25 });
+    var written = M.pushSession(many, { startedAt: 999, minutes: 25 });
+    assert.strictEqual(M.parseHistory(M.serializeHistory(written)).length, written.length);
 })();
 
 // -- countToday --

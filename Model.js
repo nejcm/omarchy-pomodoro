@@ -10,12 +10,21 @@ function mmss(seconds) {
     return pad(m) + ":" + pad(r);
 }
 
-function clampMinutes(value, fallback) {
+// Session rows kept on disk and in memory. Single source for both the write
+// path (pushSession) and the read path (parseHistory) so they can't diverge.
+var HISTORY_CAP = 50;
+
+// Returns a valid whole-minute duration, or `fallback` when the input is out
+// of the 1..180 contract. Deliberately falls back rather than clamping: a
+// hand-typed 2500 in shell.json is a typo, and the default is a better guess
+// than 180.
+function validMinutesOr(value, fallback) {
     if (typeof value !== "number" || !isFinite(value) || value < 1 || value > 180) return fallback;
     return Math.round(value);
 }
 
 function pushSession(history, entry, cap) {
+    if (typeof cap !== "number" || !isFinite(cap) || cap < 0) cap = HISTORY_CAP;
     var base = Array.isArray(history) ? history : [];
     var out = [entry].concat(base);
     if (out.length > cap) out = out.slice(0, cap);
@@ -43,7 +52,7 @@ function countToday(history, nowMs) {
 }
 
 function parseHistory(text, cap) {
-    if (typeof cap !== "number" || !isFinite(cap) || cap < 0) cap = 50;
+    if (typeof cap !== "number" || !isFinite(cap) || cap < 0) cap = HISTORY_CAP;
     if (typeof text !== "string" || text.length === 0) return [];
     var data;
     try {
@@ -71,5 +80,5 @@ function serializeHistory(history) {
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { mmss: mmss, clampMinutes: clampMinutes, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
+    module.exports = { HISTORY_CAP: HISTORY_CAP, mmss: mmss, validMinutesOr: validMinutesOr, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
 }

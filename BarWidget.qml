@@ -12,31 +12,26 @@ BarWidget {
     id: root
     moduleName: "io.github.nejcm.pomodoro"
 
-    // --- Nerd Font glyph, plan risk 3 -------------------------------------
-    // Idle-state glyph: nf-fa-hourglass_half (U+F252), an hourglass -- reads
-    // as a countdown, and stays distinct from omarchy.clock, which already
-    // occupies the bar with a clock face. Classic Font Awesome, a codepoint
-    // block Nerd Fonts v3 kept intact (confirmed: this omarchy tree itself
-    // uses adjacent codepoints from the same \uf0xx-\uf2xx FA block
-    // directly, e.g. Tray.qml's U+F053, SystemUpdate.qml's U+F021,
-    // PolkitAgent.qml's U+F023 -- so this range is Nerd-Fonts-v3-safe).
-    // Monochrome so it inherits the bar foreground -- decision 3 ruled out
-    // color emoji for exactly this reason. Swap for a literal "P" if a
-    // Nerd Font build ever drops classic FA too.
-    readonly property string idleGlyph: "\uf252"
+    // Idle glyph: nf-fa-hourglass_half (U+F252). Classic Font Awesome
+    // (U+F0xx-U+F2xx), the one Nerd Fonts range v3 kept intact -- unlike the
+    // legacy MDI block (U+F500-U+FD46) it deleted. Monochrome, so it inherits
+    // the bar foreground. Built from a hex literal, never a pasted character:
+    // a raw Private-Use-Area byte in the file is invisible in review, and
+    // this keeps the source pure ASCII. Panel.qml's glyphs follow the same
+    // rule; that block carries the codepoint-range rationale for all four.
+    readonly property string idleGlyph: String.fromCharCode(0xf252)
 
     // --- settings, section 5 -----------------------------------------------
-    // Trust boundary: shell.json is hand-edited, so clamp through Model.
-    readonly property int durationMinutes: Model.clampMinutes(setting("minutes", 25), 25)
+    // Trust boundary: shell.json is hand-edited, so validate through Model.
+    readonly property int durationMinutes: Model.validMinutesOr(setting("minutes", 25), 25)
     readonly property bool notifyEnabled: setting("notify", true) === true
 
     // --- state, section 4 ----------------------------------------------
-    property int remainingSeconds: durationMinutes * 60
     property bool running: false
     property bool started: false
     property var history: []
     // Epoch milliseconds (~1.77e12 today) overflows QML's 32-bit int
-    // (max ~2.15e9) — must be double, not int.
+    // (max ~2.15e9) — must be double, not int. Same for endsAt and nowMs.
     property double sessionStartedAt: 0
     // Duration in effect for the in-progress session, snapshotted at start()
     // so a mid-session durationMinutes edit can't retroactively relabel the
@@ -44,33 +39,45 @@ BarWidget {
     // duration (plan section 4: duration changes apply "on the next session").
     property int sessionMinutes: 0
 
+    // The countdown is derived from a wall-clock deadline, never decremented.
+    // A Timer that misses intervals (suspend, event-loop starvation) fires
+    // once on resume instead of catching up, so a counter would silently keep
+    // the time that elapsed while it wasn't running; recomputing against
+    // Date.now() cannot drift. Staying readonly is also what lets the idle
+    // branch track durationMinutes live, with no imperative reassignment
+    // anywhere: a mid-session shell.json edit can't reach an in-flight
+    // session, because that session reads endsAt instead.
+    property double endsAt: 0       // epoch ms; meaningful while running
+    property int pausedSeconds: 0   // remaining as of the last pause()
+    property double nowMs: 0        // advanced by the ticker
+
+    readonly property int remainingSeconds: running ? Math.max(0, Math.ceil((endsAt - nowMs) / 1000))
+                                                    : (started ? pausedSeconds : durationMinutes * 60)
+
     readonly property bool idle: !started
     readonly property bool paused: started && !running
     readonly property string barText: idle ? idleGlyph : Model.mmss(remainingSeconds)
 
-    // durationMinutes changing while idle takes effect immediately; while a
-    // session is in progress it takes effect on the next session only.
-    onDurationMinutesChanged: {
-        if (!started) remainingSeconds = durationMinutes * 60
-    }
-
     // --- transitions, section 4 table --------------------------------------
     function start() {
         if (running) return
+        var secs = started ? pausedSeconds : durationMinutes * 60
         if (!started) {
             started = true
             sessionStartedAt = Date.now()
             sessionMinutes = durationMinutes
-            // Break remainingSeconds' initial live binding to durationMinutes
-            // right away, so a shell.json edit in the sub-second window
-            // before the first tick can't yank time from this session.
-            remainingSeconds = durationMinutes * 60
         }
+        nowMs = Date.now()
+        endsAt = nowMs + secs * 1000
         running = true
     }
 
     function pause() {
         if (!running) return
+        // Refresh nowMs before banking the remainder: pausing before the
+        // first tick after a resume would otherwise store a stale value.
+        nowMs = Date.now()
+        pausedSeconds = remainingSeconds
         running = false
     }
 
@@ -78,7 +85,6 @@ BarWidget {
         if (!started) return
         running = false
         started = false
-        remainingSeconds = durationMinutes * 60
         // No history row. Never auto-starts.
     }
 
@@ -88,7 +94,7 @@ BarWidget {
     }
 
     function complete() {
-        history = Model.pushSession(history, { startedAt: sessionStartedAt, minutes: sessionMinutes }, 50)
+        history = Model.pushSession(history, { startedAt: sessionStartedAt, minutes: sessionMinutes })
         persistHistory()
         if (notifyEnabled) sendCompletionNotification()
         reset()
@@ -100,21 +106,19 @@ BarWidget {
         repeat: true
         running: root.running
         onTriggered: {
-            root.remainingSeconds -= 1
+            root.nowMs = Date.now()
             if (root.remainingSeconds <= 0) root.complete()
         }
     }
 
     // --- notification -------------------------------------------------
-    // Arguments are literals plus an integer (sessionMinutes, snapshotted
-    // from durationMinutes -- already clamped 1..180 by Model.clampMinutes
-    // -- at session start) — never free text — so there's no
-    // shell-quoting hole through bar.run's single command string.
+    // argv, not a shell string: execDetached takes the arguments directly, so
+    // nothing here is parsed by a shell and no argument needs quoting. Also
+    // drops the dependency on bar.run being present.
     function sendCompletionNotification() {
-        if (!root.bar) return
-        var minutes = Math.round(root.sessionMinutes)
-        var cmd = "notify-send -a Pomodoro -u normal \"Pomodoro complete\" \"" + minutes + " minute session done\""
-        root.bar.run(cmd)
+        Quickshell.execDetached(["notify-send", "-a", "Pomodoro", "-u", "normal",
+                                 "Pomodoro complete",
+                                 root.sessionMinutes + " minute session done"])
     }
 
     // --- persistence, section 8 --------------------------------------
@@ -140,20 +144,18 @@ BarWidget {
         running: false
     }
 
-    // Write API chosen: FileView.setText(), confirmed in-tree (e.g.
-    // shell/shell.qml's userConfigFile.setText(...), Clipboard.qml's
-    // historyFile.setText(...)). atomicWrites avoids a torn file if the
-    // shell dies mid-write. Fallback if setText doesn't behave on the real
-    // box: shell the JSON out via bar.run("mkdir -p ... && printf ... >
-    // file") the way shell/plugins/notifications/Service.qml does for its
-    // popup cache.
+    // atomicWrites so a shell crash mid-write leaves the previous file
+    // intact rather than a truncated one. printErrors stays off because the
+    // history file is legitimately absent on first run (same setting as
+    // Clipboard.qml's identically-shaped FileView); onSaveFailed covers the
+    // write side that suppression would otherwise hide.
     FileView {
         id: historyFile
         path: root.historyPath
         watchChanges: false
         atomicWrites: true
         printErrors: false
-        onLoaded: root.history = Model.parseHistory(text(), 50)
+        onLoaded: root.history = Model.parseHistory(text(), Model.HISTORY_CAP)
         onLoadFailed: root.history = []
         onSaveFailed: function (error) { console.warn("pomodoro: history save failed", error) }
     }
@@ -162,7 +164,7 @@ BarWidget {
         historyFile.setText(Model.serializeHistory(root.history))
     }
 
-    // --- panel routing contract, section 5 / plan risk 4 -------------------
+    // --- panel routing contract, section 5 --------------------------------
     // Must live on this bar-widget root, not the nested panel — Bar.qml's
     // popout coordinator (findPanelWidget / requestPopout) looks here.
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -185,13 +187,11 @@ BarWidget {
         if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
     }
 
-    // Injects the properties Panel.qml needs onto the loaded instance, same
-    // shape as the clock/weather plugins: bar/settings/anchorItem/hostWidget
-    // injected here; everything else (remainingSeconds, running, started,
-    // paused, history, and the start/pause/reset/toggleRunning callbacks)
-    // read and called live off `hostWidget` rather than copied in, since
-    // state changes every tick and injectPanel only re-runs on bar/settings
-    // changes.
+    // Injects what Panel.qml needs onto the loaded instance, same shape as
+    // the clock/weather plugins. Only bar/settings/anchorItem/hostWidget are
+    // pushed; timer state and callbacks are read live off `hostWidget`
+    // instead, because this runs only on bar/settings changes while the
+    // state changes every tick.
     function injectPanel() {
         var target = panelLoader.item
         if (!target) return

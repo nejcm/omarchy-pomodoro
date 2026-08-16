@@ -5,12 +5,11 @@ import qs.Ui
 import "Model.js" as Model
 
 // Pomodoro control panel: countdown + play/pause/reset + session history.
-// BarWidget.qml (already built) owns all timer state and persistence; this
-// panel is loaded into it via Loader and never copies state in. Everything
-// timer-related is read live off `hostWidget` (hostWidget.remainingSeconds,
-// .running, .started, .paused, .history) and driven via hostWidget's own
-// start()/pause()/reset()/toggleRunning() -- injectPanel only re-fires on
-// bar/settings changes, not every tick, so a local copy would go stale.
+// BarWidget.qml owns all timer state and persistence. This panel never copies
+// that state in -- it reads live off `hostWidget` and drives it through
+// hostWidget's own start()/pause()/reset()/toggleRunning(), because
+// injectPanel re-fires only on bar/settings changes, not every tick, so any
+// local copy would go stale within a second.
 Panel {
   id: root
   moduleName: "io.github.nejcm.pomodoro"
@@ -20,11 +19,17 @@ Panel {
   property var hostWidget: null
 
   // Bar.findPanelWidget / switchPanelFrom key off the bar-widget root
-  // (BarWidget.qml's `root`), not this nested panel -- plan risk 4. Same
-  // fix the clock plugin uses: route switchPanel through barIdentity
-  // instead of the base Panel's own `switchPanel`, which would pass this
-  // nested panel as the owner.
+  // (BarWidget.qml's `root`), not this nested panel. So route switchPanel
+  // through barIdentity rather than the base Panel's own switchPanel, which
+  // would pass this nested panel as the owner. Same fix the clock plugin uses.
   readonly property var barIdentity: hostWidget || root
+
+  // hostWidget is injected in Loader.onLoaded, which fires after these
+  // bindings first evaluate -- hence the null guard. Hoisted here so the
+  // history views below read as plain state instead of each repeating the
+  // guard, and so the empty/non-empty pair below is visibly one predicate
+  // and its negation.
+  readonly property int historyCount: hostWidget ? hostWidget.history.length : 0
 
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
@@ -37,21 +42,20 @@ Panel {
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // ---- glyphs, plan risk 3 ---------------------------------------------
-  // Classic Font Awesome block (codepoints U+F0xx through U+F2xx) -- the
-  // same range BarWidget.qml's hourglass glyph and this omarchy tree's own
-  // Tray.qml (pin/hide) and SystemUpdate.qml (refresh) glyphs use,
-  // confirmed intact in Nerd Fonts v3 unlike the deleted legacy MDI range
-  // (0xF500-0xFD46). fa-play (0xF04B), fa-pause (0xF04C) and fa-undo
-  // (0xF0E2) are fixed Font Awesome 4 codepoints from that same spec,
-  // unrelated to Nerd Fonts' 5-hex MDI churn. Built with
-  // String.fromCharCode from a plain hex literal rather than a source
-  // escape or a pasted character, so the codepoint is unambiguous and the
-  // file stays pure ASCII -- the earlier hazard in this plan was a raw
-  // Private-Use-Area byte landing in the file invisibly.
+  // ---- glyphs ------------------------------------------------------------
+  // Classic Font Awesome (U+F0xx-U+F2xx), the range Nerd Fonts v3 kept
+  // intact -- unlike the legacy MDI block (U+F500-U+FD46) it deleted. These
+  // are fixed Font Awesome 4 codepoints, unaffected by Nerd Fonts' 5-hex MDI
+  // churn. Same range as BarWidget.qml's hourglass, and as this omarchy
+  // tree's own Tray.qml and SystemUpdate.qml glyphs.
+  //
+  // Always String.fromCharCode over a hex literal, never a source escape or
+  // a pasted character: the codepoint stays unambiguous and the file stays
+  // pure ASCII, so a stray Private-Use-Area byte can't land here invisibly.
   readonly property string playGlyph: String.fromCharCode(0xf04b)
   readonly property string pauseGlyph: String.fromCharCode(0xf04c)
   readonly property string resetGlyph: String.fromCharCode(0xf0e2)
+  readonly property string dotGlyph: String.fromCharCode(0xb7)
 
   // Rolls TODAY's count over at midnight without needing the panel closed
   // and reopened -- same fix clock/Panel.qml uses for its date highlight.
@@ -136,13 +140,13 @@ Panel {
 
         // ---- history ----------------------------------------------------
         PanelSectionHeader {
-          text: "TODAY " + String.fromCharCode(0xb7) + " " + (root.hostWidget ? Model.countToday(root.hostWidget.history, clock.date.getTime()) : 0)
+          text: "TODAY " + root.dotGlyph + " " + (root.hostWidget ? Model.countToday(root.hostWidget.history, clock.date.getTime()) : 0)
           foreground: root.contentForeground
           fontFamily: root.contentFontFamily
         }
 
         Text {
-          visible: !root.hostWidget || root.hostWidget.history.length === 0
+          visible: root.historyCount === 0
           width: parent.width
           horizontalAlignment: Text.AlignHCenter
           text: "No sessions yet."
@@ -151,8 +155,8 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
-        // Capped so 50 rows scroll instead of growing the panel
-        // off-screen. history is already newest-first (Model.pushSession
+        // Height-capped so the rows scroll instead of growing the panel
+        // off-screen. history arrives newest-first (Model.pushSession
         // unshifts), so no re-sort needed.
         //
         // Flickable + Column, not ListView: ListView.contentHeight derives
@@ -160,10 +164,10 @@ Panel {
         // to fill its own height -- self-referential. Qt won't flag it as a
         // binding loop, it just settles wrong (a sliver, or growing a row a
         // frame). Column.implicitHeight is content-derived and independent
-        // of the viewport, so the cap works. 50 rows needs no
+        // of the viewport, so the cap works. Model.HISTORY_CAP rows need no
         // virtualization. Matches clock/Panel.qml's calendarScroll.
         Flickable {
-          visible: !!root.hostWidget && root.hostWidget.history.length > 0
+          visible: root.historyCount > 0
           width: parent.width
           height: Math.min(historyRows.implicitHeight, Style.space(220))
           contentWidth: width
@@ -183,7 +187,7 @@ Panel {
               delegate: Text {
                 required property var modelData
                 width: historyRows.width
-                text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + String.fromCharCode(0xb7) + " " + modelData.minutes + " min"
+                text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
                 color: root.contentForeground
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.body
