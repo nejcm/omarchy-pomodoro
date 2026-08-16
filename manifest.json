@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.nejcm.pomodoro",
+  "name": "Pomodoro",
+  "version": "0.1.0",
+  "author": "Nejc",
+  "license": "MIT",
+  "description": "Pomodoro countdown in the bar, with a session log",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Pomodoro",
+    "description": "Pomodoro countdown in the bar, with a session log",
+    "category": "Time",
+    "allowMultiple": false
+  }
+}
