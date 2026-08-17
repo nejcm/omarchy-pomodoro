@@ -25,8 +25,15 @@ Set under the widget's entry in `shell.json`:
 
 | Key | Default | Description |
 |---|---|---|
-| `minutes` | `25` | Session length, clamped to 1–180 |
-| `notify` | `true` | Send a desktop notification on session completion |
+| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25 |
+| `notify` | `true` | Send a desktop notification on session completion. Must be a JSON **boolean** |
+
+Types are checked strictly and fall back silently, so quote marks matter:
+`"minutes": 30` works, `"minutes": "30"` leaves you on 25, and
+`"notify": "false"` is not `false` — it reads as the default, `true`.
+
+Settings go **inline on the entry**, as siblings of `id` — not nested under a
+`settings` key:
 
 ```json
 {
@@ -35,7 +42,8 @@ Set under the widget's entry in `shell.json`:
       "right": [
         {
           "id": "io.github.nejcm.pomodoro",
-          "settings": { "minutes": 25, "notify": true }
+          "minutes": 25,
+          "notify": true
         }
       ]
     }
@@ -43,9 +51,11 @@ Set under the widget's entry in `shell.json`:
 }
 ```
 
-Entry shape (`id` + `settings` object vs. a bare string) is unverified —
-confirm against `~/.config/omarchy/shell.json` or a built-in entry such as
-`omarchy.clock` on first install.
+The bar builds a widget's settings by copying every key of the entry except
+`id` (`plugins/bar/BarModel.js`, `entrySettings`), which is why a nested
+`"settings": { … }` object would not work: `minutes` would silently stay at 25
+while the config looked correct. The built-in `omarchy.clock` entry uses the
+same inline shape.
 
 ## Usage
 

@@ -29,3 +29,17 @@ decision table.
   merge; each completed session rewrites the entire history file rather than
   appending, so concurrent writers (see multi-monitor above) can clobber
   each other's rows (plan section 8).
+- **Quarantining an unparseable history file** — the plugin currently refuses
+  to overwrite a history file it cannot parse, which protects the existing
+  data but means new sessions go unrecorded until a human fixes or removes the
+  file. Moving the bad file aside automatically (to `pomodoro.json.corrupt`)
+  and carrying on would be strictly better, but the `mv` is a `Process` and
+  races the `FileView` write to the same path; doing it properly means
+  sequencing the write behind the process's `onExited`. Deferred rather than
+  done racily (plan section 8).
+- **Testing the QML transition logic** — `start`/`pause`/`complete` live in
+  `BarWidget.qml`, so `Model.test.js` cannot reach them; the two state bugs
+  found in review (pausing past the deadline, and `ceil` inflating the banked
+  remainder) were both in that untested layer. Lifting the transitions into
+  `Model.js` as pure functions over a state object would make them assertable
+  without a running shell.

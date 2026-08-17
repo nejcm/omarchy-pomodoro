@@ -4,8 +4,11 @@ An Omarchy Quattro bar widget: hourglass glyph when idle, live countdown when
 running. Clicking it opens a panel with play/pause/reset above and a list of
 completed sessions below.
 
-Status: **planned, not written.** Authored on Windows; every line gets its
-first execution on the Omarchy box.
+Status: **written; static verification passed on the Omarchy box.** Model
+self-check, `omarchy plugin validate`, and `qmllint` all run clean, and every
+platform fact in section 2 has been checked against the installed tree
+(see section 9). Not yet loaded into a running shell — the live walkthrough
+is the one step still outstanding.
 
 ---
 
@@ -19,7 +22,7 @@ Reached by interview; recorded so nothing is silently re-litigated.
 | 2 | Kinds | `["bar-widget"]` only; `Panel.qml` loaded by the widget via `Loader` | Declaring `panel` as a second kind — built-ins (`omarchy.clock`) don't, and the bar tracks the *widget* as the panel identity |
 | 3 | Bar idle | Nerd Font hourglass glyph (`nf-fa-hourglass_half`, U+F252) — revised during build; no tomato in the classic FA block this plugin draws from, block confirmed v3-safe, codepoint confirmed against two primary sources, and a clock face would collide with `omarchy.clock` on the same bar | Emoji `🍅` — color-emoji rendering in the bar is font-dependent and won't inherit `bar.foreground` |
 | 4 | Bar running | `24:59` **replaces** the glyph; paused = same text at reduced opacity | Glyph + countdown together (bar space), blinking (noise) |
-| 5 | Clock model | Countdown over `remainingSeconds`, ticked by a `Timer` | Target-epoch model — makes pause awkward for no gain, since we don't survive restarts |
+| 5 | Clock model | **Revised during build: deadline-derived.** `remainingSeconds` is computed from a wall-clock `endsAt`, with `pausedMs` banking the exact remainder across a pause — so pause stays simple *and* a Timer that misses intervals (suspend, event-loop starvation) can't silently keep time it didn't count | A decremented `remainingSeconds` counter — the original choice; drifts exactly when the machine sleeps, which is the one case that matters |
 | 6 | Restart survival | History persists; a *running* timer dies with the shell | `service` kind + `keepLoaded` to resume — an extra entry point for a rare event |
 | 7 | Reset | Stop + restore full duration + discard; no history row, never auto-starts | Reset-as-restart (surprising), recording aborts (see 8) |
 | 8 | History rows | Completed sessions only, no labels, last 50 | Aborted sessions (guilt, not data); text labels (needs a panel input field and a wider row) |
@@ -54,6 +57,12 @@ Read from `basecamp/omarchy@quattro`, not assumed.
   `Style.font.*`, `Style.bar.iconSlot`, `Style.hoverStateColor(...)`).
 - `BarWidget` gives the subclass: `moduleName`, `settings`, `bar`,
   `vertical`, `setting(key, default)`, `broadcast(...)`.
+- Widget settings are **inline on the `shell.json` layout entry**, siblings of
+  `id` — `BarModel.entrySettings` builds the settings object by copying every
+  key of the entry *except* `id`. A nested `"settings": { … }` object therefore
+  does not work; it would leave every `setting()` call on its fallback while
+  the config looks correct. (Confirms decision 11; the README first documented
+  the nested shape and has been corrected.)
 - `bar` exposes `foreground`, `fontFamily`, `run(cmd)`, `showTooltip()`,
   `requestPopout()`, `switchPanelFrom(...)`, `shell.updateEntryInline(...)`.
 - Panel routing contract: the **bar-widget root** must expose `open()`,
@@ -63,8 +72,12 @@ Read from `basecamp/omarchy@quattro`, not assumed.
   `hoverColor` (set to `bar.urgent` for destructive actions), `enabled`,
   `focusable`, `hasCursor`, `clicked()`.
 - File I/O: `FileView` from `Quickshell.Io` (`path`, `text()`, `onLoaded`).
-  Reading is confirmed by `shell/plugins/emojis/Emojis.qml`. **Writing is the
-  one API not yet confirmed** — see risks.
+  Reading is confirmed by `shell/plugins/emojis/Emojis.qml`; writing is
+  confirmed too — `setText`, `atomicWrites`, and `saveFailed` are all declared
+  in `quickshell-io.qmltypes` and used by `shell.qml` and `Clipboard.qml`.
+- `Quickshell.execDetached([argv])` takes an argument vector directly (no
+  shell), as used by `shell/plugins/emojis/Emojis.qml`; `Quickshell.env(name)`
+  is used by `shell.qml`.
 
 ---
 
@@ -76,6 +89,7 @@ omarchy-pomodoro/
 ├── BarWidget.qml     bar label + timer state + history + Loader for the panel
 ├── Panel.qml         controls row + history list
 ├── Model.js          pure functions: formatting, history push/trim
+├── Model.test.js     plain-assert self-check for Model.js (node)
 ├── README.md         install, settings, screenshot
 ├── improvements.md   everything deliberately deferred
 ├── plans/
@@ -115,21 +129,30 @@ omarchy-pomodoro/
 Owned entirely by `BarWidget.qml`; `Panel.qml` reads it and calls back.
 
 ```
-durationMinutes : int   = setting("minutes", 25)
-remainingSeconds: int   = durationMinutes * 60
-running         : bool  = false      // ticking
-started         : bool  = false      // has a session in progress (running or paused)
-history         : array = []         // [{ startedAt: epochMs, minutes: int }, …] newest first
-sessionStartedAt: int                // epoch ms, stamped on the transition idle → running
+durationMinutes : int    = setting("minutes", 25)   // validated, 1…180
+running         : bool   = false      // ticking
+started         : bool   = false      // has a session in progress (running or paused)
+history         : array  = []         // [{ startedAt: epochMs, minutes: int }, …] newest first
+sessionStartedAt: double              // epoch ms, stamped on the transition idle → running
+sessionMinutes  : int                 // duration snapshotted at start(), for the history row
+endsAt          : double              // epoch ms deadline; meaningful while running
+pausedMs        : double              // exact remainder banked at the last pause()
+nowMs           : double              // advanced by the ticker
 ```
+
+Epoch milliseconds (~1.77e12) overflow QML's 32-bit `int` (~2.15e9), so every
+timestamp is `double`, never `int`.
 
 Derived:
 
 ```
+remainingSeconds = running ? max(0, ceil((endsAt - nowMs) / 1000))
+                           : (started ? max(0, ceil(pausedMs / 1000))
+                                      : durationMinutes * 60)
 idle      = !started
 paused    = started && !running
 barText   = idle ? idleGlyph : mmss(remainingSeconds)
-barOpacity= paused ? 0.6 : 1.0
+dimmed    = paused          // WidgetButton renders dimmed as opacity 0.45
 todayCount= history.filter(sameLocalDay(now)).length
 ```
 
@@ -137,19 +160,38 @@ Transitions:
 
 | Action | Guard | Effect |
 |---|---|---|
-| `start()` | `!running` | if `!started`: `started = true`, `sessionStartedAt = Date.now()`. `running = true`, ticker on |
-| `pause()` | `running` | `running = false`, ticker off. `remainingSeconds` frozen |
-| `reset()` | `started` | `running = started = false`, `remainingSeconds = durationMinutes * 60`. **No history row** |
-| tick | `running` | `remainingSeconds--`; at `0` → `complete()` |
-| `complete()` | — | push `{startedAt: sessionStartedAt, minutes: durationMinutes}`, trim to 50, persist, notify, then reset to idle |
+| `start()` | `!running` | if `!started`: `started = true`, `sessionStartedAt = Date.now()`, `sessionMinutes = durationMinutes`. Then `nowMs = Date.now()`, `endsAt = nowMs + secs * 1000`, `running = true` |
+| `pause()` | `running` | refresh `nowMs`. **If the deadline has already passed, `complete()` instead** — see below. Otherwise bank `pausedMs = endsAt - nowMs`, `running = false` |
+| `reset()` | `started` | `running = started = false`. `remainingSeconds` falls back to `durationMinutes * 60` on its own, since it is derived. **No history row** |
+| tick | `running` | `nowMs = Date.now()`; at `remainingSeconds <= 0` → `complete()` |
+| `complete()` | — | push `{startedAt: sessionStartedAt, minutes: sessionMinutes}`, trim to 50, persist, notify, then reset to idle |
 
-`durationMinutes` changing (a `shell.json` edit) while idle resets
-`remainingSeconds`; while a session is in progress it takes effect on the next
-session, so an edit can't yank time out from under a running timer.
+`durationMinutes` changing (a `shell.json` edit) while idle flows straight
+through to `remainingSeconds`, because that value is derived rather than
+assigned. While a session is in progress the edit cannot reach it — a running
+session reads `endsAt`, and its history row and notification read the
+`sessionMinutes` snapshot — so an edit can't yank time out from under a
+running timer or retroactively relabel a finished one.
 
-The ticker is a `Timer { interval: 1000; repeat: true; running: root.running }`.
-Second-granularity drift over 25 minutes is acceptable and invisible — a
-session that ends a second late is not a bug worth an epoch-correction path.
+The ticker is a `Timer { interval: 1000; repeat: true; running: root.running }`,
+but it only refreshes `nowMs`; it never decrements a counter. A Timer that
+misses intervals fires once on resume rather than catching up, so a counter
+would silently keep the time that passed while it wasn't running. Recomputing
+against `Date.now()` cannot drift.
+
+Two consequences of the deadline model, both found in review and fixed:
+
+- **The deadline passes before the tick that notices it.** `remainingSeconds`
+  reaches 0 as soon as `Date.now() > endsAt`, but `complete()` only runs on the
+  next tick, and ticks land late. A `pause()` inside that gap banked a zero
+  remainder and stopped the ticker, leaving a dimmed `00:00` in the bar with no
+  notification and no history row — and a `reset()` from there discarded a
+  session that had actually finished. `pause()` now completes instead: a
+  session past its deadline is finished, not pausable.
+- **The banked remainder is milliseconds, not seconds.** Rounding it to whole
+  seconds would have to use `ceil` to match the display, which hands back up to
+  a second of extra time on *every* pause/resume cycle — an error that
+  accumulates. `pausedMs` is exact; rounding stays in the display binding.
 
 ---
 
@@ -158,19 +200,28 @@ session that ends a second late is not a bug worth an epoch-correction path.
 Mirrors the clock's structure.
 
 - `BarWidget { moduleName: "io.github.nejcm.pomodoro" }`
-- Settings: `minutes` (clamped to 1…180 — a trust boundary, `shell.json` is
-  hand-edited), `notify` (bool).
-- `WidgetButton` renders `barText` at `bar.foreground`, `opacity: barOpacity`,
+- Settings: `minutes` (validated to 1…180, else falls back to 25 — a trust
+  boundary, `shell.json` is hand-edited), `notify` (bool).
+- `WidgetButton` renders `barText` at `bar.foreground`, `dimmed: paused`
+  (the base maps `dimmed` to opacity 0.45, so the plan's original 0.6 is not a
+  knob this plugin sets),
   `onPressed: togglePanel()`. Left click only; no right/middle click actions.
 - The panel-routing contract on the root: `opened`, `open()`, `close()`,
   `togglePanel()`, `closeForPopoutSwitch()`, `popoutSwitchClosing`, all
   forwarding to `panelLoader.item`.
 - `injectPanel()` on `onBarChanged` / `onSettingsChanged`, passing `bar`,
   `settings`, `anchorItem: button`, `hostWidget: root` — same as the clock.
-- History load on component completion; save on every `complete()`.
-- Notification: `bar.run("notify-send -a Pomodoro 'Pomodoro complete' '25 minute session done'")`.
-  Arguments are built from an integer, never from free text, so there is no
-  shell-quoting hole. Skipped when `notify` is false.
+- History loads via `FileView`'s implicit load when `path` is set — there is no
+  explicit call in `Component.onCompleted` (which only kicks off the state-dir
+  `mkdir -p`). Saved on every `complete()`, gated as described in section 8.
+- Notification: `Quickshell.execDetached(["notify-send", "-a", "Pomodoro",
+  "-u", "normal", "Pomodoro complete", minutes + " minute session done"])`.
+  An argv, not a shell string (the planned `bar.run` form was revised during
+  build): nothing is parsed by a shell, so no argument needs quoting, and it
+  drops the dependency on `bar.run` being present. Skipped when `notify` is
+  false.
+- A `Process { command: ["mkdir", "-p", stateDir] }` runs on completion, so the
+  first write has a directory to land in. Reads tolerate a missing file already.
 
 ## 6. `Panel.qml`
 
@@ -195,8 +246,17 @@ Fixed content width ~`Style.space(320)`.
   Clock time, not relative — relative times need a repaint timer for a list
   you only glance at.
 - Empty state: centered "No sessions yet."
-- List is a `ListView` inside a `Flickable`, capped at ~`Style.space(220)` so
-  50 rows scroll rather than growing the panel past the screen.
+- List is a `Flickable` wrapping a `Column` + `Repeater`, capped at
+  ~`Style.space(220)` so 50 rows scroll rather than growing the panel past the
+  screen. **Not a `ListView`** (as first planned): `ListView.contentHeight`
+  derives from the delegates it has instantiated, and it instantiates
+  delegates to fill its own height — self-referential, so a height capped by
+  the content settles wrong instead of erroring. `Column.implicitHeight` is
+  content-derived and independent of the viewport. 50 rows need no
+  virtualization anyway, and `clock/Panel.qml` caps its calendar the same way.
+- The file sets `pragma ComponentBehavior: Bound` so the delegate can read the
+  enclosing scope's ids cleanly; the delegate declares `required property var
+  modelData` accordingly.
 - `PanelKeyCatcher`: `onCloseRequested → close()`, `onActivateRequested →
   toggleRunning()` (Enter/Space starts and stops), `onTabRequested →
   switchPanel(direction)`.
@@ -206,12 +266,22 @@ Fixed content width ~`Style.space(320)`.
 Pure, no QML types — so the self-check can run under plain `qmljs`/`node`.
 
 ```
-mmss(seconds)                    → "24:59", clamps negatives to "00:00"
-clampMinutes(value, fallback)    → int in 1…180
-pushSession(history, entry, cap) → new array, newest first, trimmed to cap
-countToday(history, nowMs)       → int, local-day comparison
-parseHistory(text)               → array; returns [] on malformed/absent JSON
+mmss(seconds)                     → "24:59", clamps negatives to "00:00"
+validMinutesOr(value, fallback)   → int in 1…180, else fallback
+pushSession(history, entry, cap)  → new array, newest first, trimmed to cap
+countToday(history, nowMs)        → int, local-day comparison
+parseHistory(text, cap)           → array; [] on malformed/absent JSON
+serializeHistory(history)         → '{"version":1,"sessions":[…]}'
+HISTORY_CAP = 50                  → shared by the read and write paths
 ```
+
+`validMinutesOr` **falls back rather than clamping** (the name change from the
+planned `clampMinutes` is the point): a hand-typed `2500` in `shell.json` is a
+typo, and 25 is a better recovery than 180.
+
+`HISTORY_CAP` is exported and used as the default on both `pushSession` and
+`parseHistory`, so the write path cannot store more rows than the read path
+will load back — a divergence the self-check pins explicitly.
 
 `parseHistory` is a trust boundary — the state file is on disk and may be
 truncated, hand-edited, or absent. It never throws; a corrupt file degrades to
@@ -224,6 +294,22 @@ an empty log rather than a broken widget.
 ```json
 { "version": 1, "sessions": [ { "startedAt": 1762772400000, "minutes": 25 } ] }
 ```
+
+**Writes are gated on the read having settled.** `history` starts as `[]`,
+which is indistinguishable from a genuinely empty log, so persisting before the
+load resolves would publish that placeholder over real data. A `historyLoaded`
+flag blocks writes until either `onLoaded` or `onLoadFailed` has fired.
+
+**A file we cannot parse is never overwritten.** `parseHistory` degrades to
+`[]` by design, but "absent" and "present and unreadable" are very different:
+the second is a log we failed to read (truncated write, hand-edit typo, older
+format), and rewriting it destroys the only copy. `onLoaded` separates the two
+by checking whether the raw text was non-empty, and `historyUnreadable` then
+stops persistence with a warning naming the path. The cost is that new sessions
+go unsaved until a human fixes or removes the file; the alternative — found in
+review, reproduced against a truncated 40-session file — was silently deleting
+all 40. Quarantining the bad file automatically would avoid both, but the `mv`
+races the write, so it is deferred rather than done badly.
 
 Read via `FileView` on startup → `parseHistory`. Written on each completion,
 whole-file. 50 entries is a couple of KB; incremental append would be
@@ -239,15 +325,40 @@ revisit only if the file is ever shared.`
 
 One `Model.js` self-check — the logic that can actually be wrong (`mmss`
 boundaries, `pushSession` trimming and ordering, `countToday` across midnight,
-`parseHistory` on garbage). Plain `assert`s, runnable with `qmljs Model.test.js`
-or `node`. No test framework. The QML rendering is verified by looking at it.
+`parseHistory` on garbage). Plain `assert`s, runnable with `node`. No test
+framework. The QML rendering is verified by looking at it.
 
-On the Omarchy box:
+### Done (static, run on the Omarchy box)
 
 ```bash
-git clone <this repo> ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
-omarchy plugin validate ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
-qmllint -I "$OMARCHY_PATH/shell" ~/.config/omarchy/plugins/io.github.nejcm.pomodoro/*.qml
+node Model.test.js                 # all assertions passed
+omarchy plugin validate .          # exit 0
+```
+
+The validator's silence was itself checked: feeding it a manifest with `id`
+removed exits 1 with a named error, so the clean pass means something.
+
+**qmllint needs an import root the plan originally got wrong.** The modules
+declare `module qs.Ui` / `module qs.Commons`, so the import path must contain
+a directory literally named `qs`; pointing `-I` straight at
+`$OMARCHY_PATH/shell` fails every `qs.*` import and buries the real output in
+cascade errors. Quickshell supplies that mapping at runtime, qmllint does not
+— so make it explicit:
+
+```bash
+mkdir -p /tmp/qsimports && ln -sfn "$OMARCHY_PATH/shell" /tmp/qsimports/qs
+qmllint -I /tmp/qsimports BarWidget.qml Panel.qml
+```
+
+Result: exit 0. The only remaining warnings are 15 `missing-property` on
+members of untyped `QObject`/`var` holders (`bar`, `panelLoader.item`) —
+unavoidable without static types, and the shell's own `clock` plugin emits 37
+of exactly the same class. The 4 `unqualified` warnings in the history
+delegate were real and are fixed with `pragma ComponentBehavior: Bound`.
+
+### Outstanding (live)
+
+```bash
 omarchy-shell shell rescanPlugins
 omarchy-shell shell setPluginEnabled io.github.nejcm.pomodoro true
 ```
@@ -262,22 +373,38 @@ running timer → Escape closes → disable → re-enable → remove.
 
 ## 10. Risks
 
-1. **Style/Color token names.** Taken from one plugin's usage. Some will be
-   wrong; `qmllint` names them and each is a one-line fix. Highest-churn area.
-2. **`FileView` write API.** Reads are confirmed in-tree; the write path
-   (`setText` / adapter / `blockWrites`) is not. Fallback if it fights back:
-   `bar.run("…")` shelling the JSON out through a `cat > file` — uglier, and
-   only if the QML path doesn't work.
-3. **Hourglass glyph codepoint.** Depends on the bar's Nerd Font build. Picked
-   from the Nerd Font set; swap the literal if it renders as tofu.
-4. **Panel routing contract.** The `opened`/`open`/`close` trio must sit on
-   the *widget* root, not the panel, or the bar's popout coordinator won't
-   find it. Following the clock exactly avoids this; noted because the failure
-   mode (panel opens but the bar's open-dot and panel-switching misbehave) is
-   non-obvious.
-5. **No local execution.** Nothing here has run. First contact is on your
-   machine, and the first pass will produce errors — that's expected, not a
-   sign the plan is wrong.
+1. ~~**Style/Color token names.**~~ **Closed.** Every token used resolves in
+   the installed tree: `Style.space()`, `Style.font.display` / `.body` /
+   `.caption` / `.family`, and on `bar` both `foreground` (Bar.qml:68) and
+   `urgent` (Bar.qml:72). Component APIs likewise — `WidgetButton.text` /
+   `.dimmed` / `pressed(int button)`, `PanelActionButton.iconText` /
+   `.tooltipText` / `.foreground` / `.hoverColor` / `.fontFamily`,
+   `PanelSectionHeader` (a `Text`, so `text` is inherited),
+   `PanelSeparator.foreground`, and `KeyboardPanel.fittedContentWidth/Height`
+   / `.centerOnBar` / `.focusTarget` / `.owner`.
+2. ~~**`FileView` write API.**~~ **Closed.** `quickshell-io.qmltypes` declares
+   `setText(QString)`, the `saveFailed(error)` and `loadFailed(error)`
+   signals, and `atomicWrites` — all of which this plugin uses. The shell
+   itself writes the same way (`shell.qml`, `plugins/clipboard/Clipboard.qml`).
+   The `bar.run("cat > file")` fallback is not needed.
+3. ~~**Hourglass glyph codepoint.**~~ **Closed.** `fc-match monospace` resolves
+   to JetBrainsMono Nerd Font, whose cmap names the four codepoints exactly as
+   documented: `f252 → fa-hourglass_half`, `f04b → fa-play`,
+   `f04c → fa-pause`, `f0e2 → fa-undo` (plus `00b7 → periodcentered`). Still
+   font-dependent in principle — a user on a non-Nerd-Font bar gets tofu.
+4. **Panel routing contract.** *Still open — structurally correct, not yet
+   exercised.* The `opened`/`open`/`close` trio must sit on the *widget* root,
+   not the panel, or the bar's popout coordinator won't find it. Verified by
+   reading (base `Panel` supplies `opened`/`open`/`close`/`toggle`/
+   `closeForPopoutSwitch`, and the root forwards all of them), but the failure
+   mode is a runtime misbehavior — the open-dot and panel-switching going
+   wrong while the panel still opens — so only the live walkthrough settles it.
+5. **No local execution.** *Narrowed.* The logic and the static contracts now
+   run clean on the real box. What remains unexercised is everything only a
+   running shell shows: panel anchoring and layout, the popout coordinator,
+   the tick loop, the notification, and the first write to
+   `~/.local/state/omarchy/pomodoro.json`. Expect the first load to surface
+   something — that's still normal, not a sign the plan is wrong.
 
 ---
 

@@ -48,11 +48,18 @@ BarWidget {
     // anywhere: a mid-session shell.json edit can't reach an in-flight
     // session, because that session reads endsAt instead.
     property double endsAt: 0       // epoch ms; meaningful while running
-    property int pausedSeconds: 0   // remaining as of the last pause()
+    // Banked remainder as of the last pause(), in *milliseconds*. Whole
+    // seconds would have to round, and the only rounding consistent with the
+    // display is Math.ceil -- which hands back up to a second of extra time on
+    // every pause/resume cycle, an error that accumulates rather than washing
+    // out. Keeping the raw remainder makes resume exact and leaves rounding
+    // where it belongs: in the display binding below.
+    property double pausedMs: 0
     property double nowMs: 0        // advanced by the ticker
 
     readonly property int remainingSeconds: running ? Math.max(0, Math.ceil((endsAt - nowMs) / 1000))
-                                                    : (started ? pausedSeconds : durationMinutes * 60)
+                                                    : (started ? Math.max(0, Math.ceil(pausedMs / 1000))
+                                                               : durationMinutes * 60)
 
     readonly property bool idle: !started
     readonly property bool paused: started && !running
@@ -61,14 +68,14 @@ BarWidget {
     // --- transitions, section 4 table --------------------------------------
     function start() {
         if (running) return
-        var secs = started ? pausedSeconds : durationMinutes * 60
+        var ms = started ? pausedMs : durationMinutes * 60 * 1000
         if (!started) {
             started = true
             sessionStartedAt = Date.now()
             sessionMinutes = durationMinutes
         }
         nowMs = Date.now()
-        endsAt = nowMs + secs * 1000
+        endsAt = nowMs + ms
         running = true
     }
 
@@ -77,7 +84,18 @@ BarWidget {
         // Refresh nowMs before banking the remainder: pausing before the
         // first tick after a resume would otherwise store a stale value.
         nowMs = Date.now()
-        pausedSeconds = remainingSeconds
+        // The deadline can already have passed: remainingSeconds reaches 0 the
+        // moment Date.now() > endsAt, but complete() only runs on the next
+        // tick, and ticks land late. Pausing inside that gap used to bank a
+        // zero remainder and stop the ticker, stranding the widget on a dimmed
+        // 00:00 forever -- no notification, no history row, and a reset from
+        // there would discard a session that had in fact finished. Finish it
+        // instead; a session past its deadline is complete, not pausable.
+        if (endsAt - nowMs <= 0) {
+            complete()
+            return
+        }
+        pausedMs = endsAt - nowMs
         running = false
     }
 
@@ -144,6 +162,18 @@ BarWidget {
         running: false
     }
 
+    // True once we know what is on disk -- either it loaded, or it definitively
+    // wasn't there. Until then `history` is an empty placeholder that merely
+    // looks like an empty log, and writing it would publish that guess over
+    // real data.
+    property bool historyLoaded: false
+
+    // The file exists and holds something, but parseHistory rejected all of
+    // it. That is not an empty log; it is a log we failed to read (truncated
+    // write, hand-edit typo, older format). Overwriting it would destroy the
+    // only copy, so persistence stops until a human resolves it.
+    property bool historyUnreadable: false
+
     // atomicWrites so a shell crash mid-write leaves the previous file
     // intact rather than a truncated one. printErrors stays off because the
     // history file is legitimately absent on first run (same setting as
@@ -155,12 +185,38 @@ BarWidget {
         watchChanges: false
         atomicWrites: true
         printErrors: false
-        onLoaded: root.history = Model.parseHistory(text(), Model.HISTORY_CAP)
-        onLoadFailed: root.history = []
+        onLoaded: {
+            var raw = text()
+            var parsed = Model.parseHistory(raw, Model.HISTORY_CAP)
+            root.history = parsed
+            // Distinguishing the two ways of arriving at [] is the whole point:
+            // an absent or genuinely empty file is safe to overwrite, a file
+            // with bytes we couldn't parse is not.
+            root.historyUnreadable = parsed.length === 0 && raw.trim().length > 0
+            if (root.historyUnreadable)
+                console.warn("pomodoro: could not parse", root.historyPath,
+                             "- leaving it untouched; sessions will not be saved until it is fixed or removed")
+            root.historyLoaded = true
+        }
+        onLoadFailed: {
+            // Absent file on first run is the normal path, not an error.
+            root.history = []
+            root.historyUnreadable = false
+            root.historyLoaded = true
+        }
         onSaveFailed: function (error) { console.warn("pomodoro: history save failed", error) }
     }
 
     function persistHistory() {
+        // Never write ahead of the load. complete() can only fire a full
+        // session after startup, so the race is not reachable through the UI
+        // today -- but the guard costs nothing and the failure it prevents
+        // (publishing a placeholder [] over a real log) is unrecoverable.
+        if (!historyLoaded) return
+        if (historyUnreadable) {
+            console.warn("pomodoro: refusing to overwrite unparseable", root.historyPath)
+            return
+        }
         historyFile.setText(Model.serializeHistory(root.history))
     }
 

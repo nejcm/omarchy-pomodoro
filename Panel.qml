@@ -1,3 +1,11 @@
+// The history Repeater's delegate reads ids from this file's outer scope
+// (root, historyRows). Under the default Unbound behavior that access is
+// unqualified -- it happens to resolve, but qmllint flags it and the lookup
+// isn't guaranteed. Bound captures the enclosing scope properly; it also
+// requires delegate model properties to be declared `required`, which the
+// delegate below already does.
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import Quickshell
 import qs.Commons
