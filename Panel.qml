@@ -39,6 +39,17 @@ Panel {
   // and its negation.
   readonly property int historyCount: hostWidget ? hostWidget.history.length : 0
 
+  // Transport controls, sized as the panel's hero affordance rather than as
+  // incidental icons. The default `Style.font.icon` (= title, 14) reads as a
+  // toolbar glyph next to a 24px countdown; `display` puts the two on the same
+  // footing. The hit target is set explicitly instead of leaning on
+  // PanelActionButton's default (`fontSize` + `spacing.sm` * 2, which leaves
+  // only 4px around the glyph) -- a play/pause you press repeatedly wants
+  // margin for an imprecise click. Both are tokens, so they still track the
+  // theme's font and spacing scales.
+  readonly property int controlGlyphSize: Style.font.display
+  readonly property int controlHitSize: Style.space(44)
+
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -127,6 +138,8 @@ Panel {
               tooltipText: root.hostWidget && root.hostWidget.running ? "Pause" : "Start"
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
+              fontSize: root.controlGlyphSize
+              size: root.controlHitSize
               onClicked: if (root.hostWidget) root.hostWidget.toggleRunning()
             }
 
@@ -136,6 +149,8 @@ Panel {
               foreground: root.contentForeground
               hoverColor: root.bar ? root.bar.urgent : root.contentForeground
               fontFamily: root.contentFontFamily
+              fontSize: root.controlGlyphSize
+              size: root.controlHitSize
               enabled: !!root.hostWidget && root.hostWidget.started
               onClicked: if (root.hostWidget) root.hostWidget.reset()
             }
