@@ -4,11 +4,12 @@ An Omarchy Quattro bar widget: hourglass glyph when idle, live countdown when
 running. Clicking it opens a panel with play/pause/reset above and a list of
 completed sessions below.
 
-Status: **written; static verification passed on the Omarchy box.** Model
-self-check, `omarchy plugin validate`, and `qmllint` all run clean, and every
-platform fact in section 2 has been checked against the installed tree
-(see section 9). Not yet loaded into a running shell — the live walkthrough
-is the one step still outstanding.
+Status: **shipped and running.** Model self-check, `omarchy plugin validate`,
+and `qmllint` run clean; every platform fact in section 2 is checked against
+the installed tree; and the plugin is installed, enabled in `bar.layout.right`,
+and has been walked idle → start → pause → completion in a live shell (see
+section 9). Secondary paths — resume, reset, shell restart, uninstall — remain
+unexercised.
 
 ---
 
@@ -356,18 +357,37 @@ unavoidable without static types, and the shell's own `clock` plugin emits 37
 of exactly the same class. The 4 `unqualified` warnings in the history
 delegate were real and are fixed with `pragma ComponentBehavior: Bound`.
 
-### Outstanding (live)
+### Done (live, in a running shell)
+
+Installed as a git clone of the work tree — **not a symlink**, which
+`omarchy plugin validate` rejects outright ("symlinks are not allowed inside a
+plugin folder"), so the convenient dev-loop install is not available:
 
 ```bash
+git clone <repo> ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
+omarchy plugin validate ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
 omarchy-shell shell rescanPlugins
-omarchy-shell shell setPluginEnabled io.github.nejcm.pomodoro true
+omarchy plugin enable io.github.nejcm.pomodoro --section right --before omarchy.power
 ```
 
-Then add it to `bar.layout.right` in `~/.config/omarchy/shell.json` and walk:
-idle glyph → start → countdown ticks → pause dims → resume → reset discards →
-run to completion (set `minutes: 1`) → notification fires → row appears →
-panel reopens with history intact → shell restart keeps history, drops any
-running timer → Escape closes → disable → re-enable → remove.
+`omarchy plugin enable` writes the `bar.layout.right` entry itself; hand-editing
+`shell.json` for placement is unnecessary. Note that a bar widget's enablement
+*is* its layout entry — the top-level `plugins` array stays `[]`.
+
+Walked with `minutes: 1`: idle glyph renders as a glyph (not tofu) → panel opens
+and the bar's open-dot appears under the widget → start → countdown ticks →
+pause freezes and dims → run to completion → notification fires → `TODAY · 1`
+and the row appear → `~/.local/state/omarchy/pomodoro.json` written on first
+completion, state dir created by the `mkdir -p`. No pomodoro output of any kind
+in the shell log across the whole walkthrough.
+
+The panel centers on the bar rather than anchoring under the widget. That is
+`centerOnBar: true` behaving as designed — `clock` and `weather` both set it —
+not a misanchor.
+
+Still unexercised: resume-after-pause, `reset()`, Escape-to-close, panel
+switching via Tab, shell restart (history survives, running timer does not),
+and disable → re-enable → remove.
 
 ---
 
@@ -392,19 +412,17 @@ running timer → Escape closes → disable → re-enable → remove.
    documented: `f252 → fa-hourglass_half`, `f04b → fa-play`,
    `f04c → fa-pause`, `f0e2 → fa-undo` (plus `00b7 → periodcentered`). Still
    font-dependent in principle — a user on a non-Nerd-Font bar gets tofu.
-4. **Panel routing contract.** *Still open — structurally correct, not yet
-   exercised.* The `opened`/`open`/`close` trio must sit on the *widget* root,
-   not the panel, or the bar's popout coordinator won't find it. Verified by
-   reading (base `Panel` supplies `opened`/`open`/`close`/`toggle`/
-   `closeForPopoutSwitch`, and the root forwards all of them), but the failure
-   mode is a runtime misbehavior — the open-dot and panel-switching going
-   wrong while the panel still opens — so only the live walkthrough settles it.
-5. **No local execution.** *Narrowed.* The logic and the static contracts now
-   run clean on the real box. What remains unexercised is everything only a
-   running shell shows: panel anchoring and layout, the popout coordinator,
-   the tick loop, the notification, and the first write to
-   `~/.local/state/omarchy/pomodoro.json`. Expect the first load to surface
-   something — that's still normal, not a sign the plan is wrong.
+4. ~~**Panel routing contract.**~~ **Closed.** The bar's open-dot renders under
+   the widget while the panel is open, which is the coordinator finding the
+   `opened`/`open`/`close` trio on the widget root — the exact failure mode
+   this risk named. Panel switching via Tab is the one part of the contract
+   still unexercised.
+5. ~~**No local execution.**~~ **Closed for the main path.** The plugin has run
+   in a live shell: tick loop, panel layout and anchoring, notification, and
+   the first write to `~/.local/state/omarchy/pomodoro.json` all worked on the
+   first load, with nothing in the shell log. The unexercised remainder is
+   listed at the end of section 9 — all of it secondary paths, none of it the
+   first-contact risk this entry was about.
 
 ---
 
