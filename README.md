@@ -4,20 +4,62 @@ Omarchy Quickshell bar widget. Hourglass glyph while idle; the glyph is replaced
 by a live `mm:ss` countdown while running, dimmed while paused. Click it to
 open a panel with play/pause, reset, and a log of completed sessions below.
 
+![The pomodoro panel: countdown, play and reset controls, and a session log](preview.png)
+
+## Requirements
+
+- Omarchy with the Quattro shell (`omarchy-shell`) — this is a `bar-widget`
+  plugin and uses the shell's `qs.Ui` / `qs.Commons` modules.
+- A Nerd Font as the bar font, for the hourglass, play, pause, and undo
+  glyphs. Omarchy's default (JetBrainsMono Nerd Font) covers all four; a bar
+  configured with a non-Nerd font renders them as tofu.
+- `notify-send` (`libnotify`) for the completion notification, which ships with
+  Omarchy. Absent, the notification is skipped silently; nothing else breaks.
+
+No other dependencies: the plugin is four files of QML and JavaScript, and it
+runs inside the existing shell process rather than spawning anything of its own
+beyond `mkdir -p` for its state directory and `notify-send` on completion.
+
 ## Install
 
 ```bash
-git clone <this repo> ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
+git clone https://github.com/nejcm/omarchy-pomodoro.git ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
 omarchy plugin validate ~/.config/omarchy/plugins/io.github.nejcm.pomodoro
 omarchy-shell shell rescanPlugins
-omarchy-shell shell setPluginEnabled io.github.nejcm.pomodoro true
+omarchy plugin enable io.github.nejcm.pomodoro --section right --before omarchy.power
 ```
 
-Third-party plugins install disabled by default; `setPluginEnabled` above
-turns it on after review.
+Third-party plugins are discovered disabled; `omarchy plugin enable` turns this
+one on after you have reviewed it, and writes the `bar.layout.right` entry for
+you — no hand-editing of `shell.json` is needed to place it. Drop
+`--before omarchy.power` to append instead, or use `--section left|center`.
 
-Then add it to `bar.layout.right` in `~/.config/omarchy/shell.json` — see
-Settings below for the entry shape.
+Two things worth knowing:
+
+- **Clone it, don't symlink it.** `omarchy plugin validate` rejects a symlinked
+  plugin folder outright, so pointing the plugin directory at a working copy
+  elsewhere does not work.
+- A bar widget's *enablement is its layout entry*. The top-level `plugins`
+  array in `shell.json` stays `[]`; that is expected, not a failed install.
+
+## Uninstall
+
+```bash
+omarchy plugin remove io.github.nejcm.pomodoro --yes
+```
+
+That disables the plugin (removing its bar entry), deletes the cloned folder,
+and rescans — the bar updates without a restart. Session history is deliberately
+left behind so a reinstall picks it back up; delete it yourself if you want it
+gone:
+
+```bash
+rm -f ~/.local/state/omarchy/pomodoro.json
+```
+
+The plugin writes nothing else outside its own folder. It never edits
+`shell.json`; the `omarchy plugin enable`/`remove` commands above do, on your
+say-so.
 
 ## Settings
 
@@ -57,6 +99,10 @@ The bar builds a widget's settings by copying every key of the entry except
 while the config looked correct. The built-in `omarchy.clock` entry uses the
 same inline shape.
 
+`shell.json` hot-reloads, so a duration change applies on save. It takes effect
+on the *next* session — an edit mid-session cannot yank time out from under a
+running timer, and cannot relabel a session that has already finished.
+
 ## Usage
 
 - Idle: hourglass glyph in the bar.
@@ -68,6 +114,7 @@ same inline shape.
   history row.
 - Completed sessions are recorded (no aborted sessions), newest first,
   capped at 50 rows.
+- With the panel focused, Enter or Space starts and stops, and Escape closes.
 
 ## History
 
@@ -75,8 +122,15 @@ Stored at `~/.local/state/omarchy/pomodoro.json`. A running (or paused)
 timer does **not** survive a shell restart — only completed-session history
 persists.
 
+If that file exists but cannot be parsed, the plugin stops saving rather than
+overwrite it, and logs the path. That protects a file damaged by a truncated
+write or a hand-edit, at the cost of new sessions going unrecorded until you
+fix or delete it.
+
 Multi-monitor: each bar surface runs its own timer and whole-file-writes
 history on completion, so a dual-head setup can produce duplicate or
-last-writer-wins history entries. See improvements.md.
+last-writer-wins history entries. See [improvements.md](improvements.md).
 
-`preview.png` is pending a screenshot on real hardware.
+## License
+
+MIT — see [LICENSE](LICENSE).
