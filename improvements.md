@@ -43,3 +43,19 @@ decision table.
   remainder) were both in that untested layer. Lifting the transitions into
   `Model.js` as pure functions over a state object would make them assertable
   without a running shell.
+- **JS lint/format tooling (ESLint, Prettier)** — would cover `Model.js`
+  (3KB of 26KB) and none of the QML where the actual bugs have been, in
+  exchange for a `package.json`, a lockfile and `node_modules` in a repo
+  that otherwise clones and runs. Revisit if a second contributor arrives.
+- **`qmllint` on the QML files** — tried in CI and removed. Quickshell is
+  AUR-only and `qs.*` is omarchy-shell's own module namespace, so neither
+  resolves on a stock Ubuntu runner; because every type in both files comes
+  from one of them, the run produced 317 warnings with no true positives: 144
+  unresolved types, 142 cascade warnings about properties on those unresolved
+  types, and 31 "unqualified access" hits that were all singletons (`Style`,
+  `SystemClock`, `Quickshell`) or `parent`/`anchors` refs. Qt 6.4, which
+  Ubuntu ships, has no category flag that suppresses the unresolved-type
+  family, so there is no filtered version of this check either. Real coverage
+  needs an Arch CI image that builds `quickshell` from the AUR and clones
+  `omarchy-shell`, rebuilt whenever either moves — worth it only if the QML
+  grows well past its current 23KB.

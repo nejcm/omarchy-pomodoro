@@ -131,6 +131,27 @@ Multi-monitor: each bar surface runs its own timer and whole-file-writes
 history on completion, so a dual-head setup can produce duplicate or
 last-writer-wins history entries. See [improvements.md](improvements.md).
 
+## Development
+
+No build step and no npm dependencies. Two checks run on every pull request
+and on pushes to `master` ([.github/workflows/checks.yml](.github/workflows/checks.yml)),
+both runnable locally:
+
+```bash
+node Model.test.js
+```
+
+`Model.js` holds the pure logic (formatting, validation, history parsing and
+capping) and `Model.test.js` is a plain `assert` self-check — no framework. The
+second check parses `manifest.json`, which catches a typo that would otherwise
+make the plugin silently undiscoverable.
+
+The QML is not linted or covered by tests. `qmllint` was tried and removed:
+Quickshell is AUR-only and `qs.*` is omarchy-shell's own module namespace, so
+neither resolves on a stock runner, and every type in both files comes from one
+of them — the run produced 317 warnings, none of them real. See
+[improvements.md](improvements.md) for the measurement and the upgrade path.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
