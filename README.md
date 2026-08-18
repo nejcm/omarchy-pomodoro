@@ -67,7 +67,7 @@ Set under the widget's entry in `shell.json`:
 
 | Key | Default | Description |
 |---|---|---|
-| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25 |
+| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25. The panel's +/- and scroll wheel can nudge this at runtime (see Usage below), but that nudge is not written back here -- it is discarded whenever `shell.json` is re-read (any settings change, including a shell restart) |
 | `notify` | `true` | Send a desktop notification on session completion. Must be a JSON **boolean** |
 
 Types are checked strictly and fall back silently, so quote marks matter:
@@ -108,8 +108,17 @@ running timer, and cannot relabel a session that has already finished.
 - Idle: hourglass glyph in the bar.
 - Running: glyph is replaced by a `mm:ss` countdown; paused shows the same
   text at reduced opacity.
-- Click the widget to open the panel: play/pause and reset controls above,
-  a session log below.
+- Click the widget to open the panel: the countdown flanked by +/- (5 minute
+  steps, or scroll while idle), play/pause and reset below that, and a
+  session log at the bottom.
+- +/- and the wheel adjust `durationMinutes` while idle. Once a session has
+  started, the buttons still work but adjust that session in place instead
+  (the running deadline or paused remainder), clamped so it can't be
+  shortened past what's left -- the wheel is idle-only. Either way the
+  adjustment is in-memory only -- it does not write `shell.json` and is
+  discarded whenever `shell.json` is re-read (any settings change, including
+  a shell restart); use the `minutes` setting above for a change that should
+  stick.
 - Reset stops the timer and restores the full duration without recording a
   history row.
 - Completed sessions are recorded (no aborted sessions), newest first,

@@ -25,6 +25,49 @@ assert.strictEqual(M.validMinutesOr(25.7, 25), 26); // rounds
 assert.strictEqual(M.validMinutesOr(0.6, 25), 25); // raw value below range, not promoted by rounding
 assert.strictEqual(M.validMinutesOr(180.4, 25), 25); // raw value above range, not promoted by rounding
 
+// -- stepMinutes --
+assert.strictEqual(M.stepMinutes(25, 5), 30); // step up
+assert.strictEqual(M.stepMinutes(25, -5), 20); // step down
+assert.strictEqual(M.stepMinutes(3, -5), 1); // clamps at MIN_MINUTES
+assert.strictEqual(M.stepMinutes(178, 5), 180); // clamps at MAX_MINUTES
+assert.strictEqual(M.stepMinutes(1, -5), 1); // already at lower bound, no-op
+assert.strictEqual(M.stepMinutes(180, 5), 180); // already at upper bound, no-op
+assert.strictEqual(M.stepMinutes(25, "abc"), 25); // non-numeric delta, no movement
+assert.strictEqual(M.stepMinutes(25, Infinity), 25); // non-finite delta, no movement
+assert.strictEqual(M.stepMinutes(0, 5), 30); // invalid value falls back to 25 first
+assert.strictEqual(M.stepMinutes(25, 0.333), 25); // fractional delta rounds, does not leak a fraction
+
+// -- adjustSession --
+// remainingMs is milliseconds, never the ceil'd display seconds.
+var MIN5 = 5 * 60 * 1000;
+assert.deepStrictEqual(M.adjustSession(25, 25 * 60 * 1000, 5), { minutes: 30, appliedMs: MIN5 });
+assert.deepStrictEqual(M.adjustSession(25, 25 * 60 * 1000, -5), { minutes: 20, appliedMs: -MIN5 });
+assert.strictEqual(M.adjustSession(180, 60000, 5), null); // clamped at MAX, no-op
+assert.strictEqual(M.adjustSession(1, 60000, -5), null); // clamped at MIN, no-op
+assert.strictEqual(M.adjustSession(25, 0, 5), null); // deadline passed: complete, not extendable
+assert.strictEqual(M.adjustSession(25, -1, 5), null); // deadline passed by a hair
+assert.strictEqual(M.adjustSession(25, MIN5, -5), null); // would consume exactly what's left
+assert.strictEqual(M.adjustSession(25, MIN5 - 1, -5), null); // would overshoot into the past
+assert.deepStrictEqual(M.adjustSession(25, MIN5 + 1, -5), { minutes: 20, appliedMs: -MIN5 }); // 1ms to spare
+assert.strictEqual(M.adjustSession(25, "abc", -5), null); // non-numeric remainder
+assert.strictEqual(M.adjustSession(25, Infinity, -5), null); // non-finite remainder
+// appliedMs tracks the *clamped* result, not the delta -- otherwise the
+// history row stops matching the minutes actually counted down.
+assert.deepStrictEqual(M.adjustSession(178, 60000, 5), { minutes: 180, appliedMs: 2 * 60 * 1000 });
+assert.deepStrictEqual(M.adjustSession(4, 10 * 60 * 1000, -5), { minutes: 1, appliedMs: -3 * 60 * 1000 });
+
+// -- wheelSteps --
+assert.deepStrictEqual(M.wheelSteps(0, 120), { steps: 1, remainder: 0 }); // one notch
+assert.deepStrictEqual(M.wheelSteps(0, -120), { steps: -1, remainder: 0 });
+assert.deepStrictEqual(M.wheelSteps(0, 40), { steps: 0, remainder: 40 }); // sub-notch banks
+assert.deepStrictEqual(M.wheelSteps(80, 40), { steps: 1, remainder: 0 }); // banked units add up
+assert.deepStrictEqual(M.wheelSteps(0, 300), { steps: 2, remainder: 60 }); // flick: 2 steps, rest banked
+assert.deepStrictEqual(M.wheelSteps(0, -300), { steps: -2, remainder: -60 }); // truncates toward zero
+assert.deepStrictEqual(M.wheelSteps(100, -40), { steps: 0, remainder: 60 }); // reversal can't fire early
+assert.deepStrictEqual(M.wheelSteps("abc", 120), { steps: 1, remainder: 0 }); // invalid accumulator
+assert.deepStrictEqual(M.wheelSteps(50, "abc"), { steps: 0, remainder: 50 }); // invalid delta, bank kept
+assert.deepStrictEqual(M.wheelSteps(50, NaN), { steps: 0, remainder: 50 });
+
 // -- pushSession --
 (function () {
     var h0 = [];

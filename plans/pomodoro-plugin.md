@@ -29,7 +29,7 @@ Reached by interview; recorded so nothing is silently re-litigated.
 | 8 | History rows | Completed sessions only, no labels, last 50 | Aborted sessions (guilt, not data); text labels (needs a panel input field and a wider row) |
 | 9 | Storage | `~/.local/state/omarchy/pomodoro.json` | Plugin dir (clobbered by `omarchy plugin update`, dirties `git status`); `shell.json` (config file, shell owns writes) |
 | 10 | Completion | One desktop notification, urgency normal | Sound (ships an audio file + a player dependency for a *ding*); auto-opening the panel (steals focus every 25 min) |
-| 11 | Settings | `minutes` (25), `notify` (true), inline in `shell.json` | `historyLimit` as a knob (hardcode 50); in-panel duration presets (deferred) |
+| 11 | Settings | `minutes` (25), `notify` (true), inline in `shell.json` | `historyLimit` as a knob (hardcode 50); fixed 15/25/50 presets (deferred) — superseded by the +/-5 nudge, see section 4 |
 | 12 | Control | Click toggles panel, Escape/click-outside closes | IPC methods + Hyprland hotkeys — needs `keepLoaded` to answer while closed, which reopens decision 6. Deferred |
 | 13 | Publishing | `git init` + local commits only | `gh repo create --push` — not until it has run on real hardware |
 | 14 | License | MIT | — |
@@ -166,6 +166,7 @@ Transitions:
 | `reset()` | `started` | `running = started = false`. `remainingSeconds` falls back to `durationMinutes * 60` on its own, since it is derived. **No history row** |
 | tick | `running` | `nowMs = Date.now()`; at `remainingSeconds <= 0` → `complete()` |
 | `complete()` | — | push `{startedAt: sessionStartedAt, minutes: sessionMinutes}`, trim to 50, persist, notify, then reset to idle |
+| `adjustMinutes(d)` | `Model.adjustSession` accepts | idle: `durationMinutes = stepMinutes(durationMinutes, d)`. Started: `sessionMinutes = next` and the same shift applied to `endsAt` (running) or `pausedMs` (paused). Refused when the step clamps to a no-op, the deadline has already passed, or the shortening would consume what is left |
 
 `durationMinutes` changing (a `shell.json` edit) while idle flows straight
 through to `remainingSeconds`, because that value is derived rather than
@@ -173,6 +174,15 @@ assigned. While a session is in progress the edit cannot reach it — a running
 session reads `endsAt`, and its history row and notification read the
 `sessionMinutes` snapshot — so an edit can't yank time out from under a
 running timer or retroactively relabel a finished one.
+
+`adjustMinutes()` is the one deliberate exception to that rule: an explicit
+user nudge from the panel's +/- buttons (or the idle-only scroll wheel), which
+*does* reach a started session. It stays honest about history because it moves
+`sessionMinutes` and the deadline by the identical amount — the recorded
+minutes still equal the minutes actually counted down. Since `durationMinutes`
+becomes writable for the idle case, its `setting()` binding is gone after the
+first nudge, so `onSettingsChanged` re-asserts it; a nudge therefore survives
+until any settings change, and is not persisted to `shell.json`.
 
 The ticker is a `Timer { interval: 1000; repeat: true; running: root.running }`,
 but it only refreshes `nowMs`; it never decrements a counter. A Timer that
@@ -389,6 +399,13 @@ Still unexercised: resume-after-pause, `reset()`, Escape-to-close, panel
 switching via Tab, shell restart (history survives, running timer does not),
 and disable → re-enable → remove.
 
+**The walkthrough and the qmllint run above both predate the duration-adjust
+feature.** The +/- buttons and the scroll wheel have not been exercised live,
+and `qmllint` has not been re-run since; CI covers `node Model.test.js` and a
+manifest parse only. `Model.adjustSession` / `Model.wheelSteps` carry the
+arithmetic and are unit-tested, so what is unverified is the QML wiring, not
+the logic.
+
 ---
 
 ## 10. Risks
@@ -430,5 +447,6 @@ and disable → re-enable → remove.
 
 Work/break cycle with auto-advance · IPC methods + Hyprland hotkeys (needs
 `keepLoaded`) · session labels · completion sound · running timer surviving a
-shell restart · in-panel duration presets (15/25/50) · daily/weekly stats ·
+shell restart · persisting an adjusted duration back to `shell.json` ·
+daily/weekly stats ·
 history grouped by day.

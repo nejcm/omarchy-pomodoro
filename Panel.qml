@@ -50,6 +50,13 @@ Panel {
   readonly property int controlGlyphSize: Style.font.display
   readonly property int controlHitSize: Style.space(44)
 
+  // The +/- pair stays secondary to play/pause, but PanelActionButton's
+  // default (14px glyph in a 22px box) reads as a right-edge row action
+  // next to a 24px countdown. One step up on each scale -- still both
+  // tokens, so they track the theme.
+  readonly property int adjustGlyphSize: Style.font.iconLarge
+  readonly property int adjustHitSize: Style.space(32)
+
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -74,7 +81,16 @@ Panel {
   readonly property string playGlyph: String.fromCharCode(0xf04b)
   readonly property string pauseGlyph: String.fromCharCode(0xf04c)
   readonly property string resetGlyph: String.fromCharCode(0xf0e2)
+  readonly property string plusGlyph: String.fromCharCode(0xf067)
+  readonly property string minusGlyph: String.fromCharCode(0xf068)
   readonly property string dotGlyph: String.fromCharCode(0xb7)
+
+  // Wheel-step accumulator for the countdown's duration scroll.
+  // Model.wheelSteps banks the sub-notch remainder so a touchpad flick can't
+  // dump 20 minutes at once. Kept in Model rather than borrowed from a shell
+  // singleton: it is a dozen lines of arithmetic, it is covered by
+  // Model.test.js, and it cannot break when the host shell moves a helper.
+  property real wheelAccumulator: 0
 
   // Rolls TODAY's count over at midnight without needing the panel closed
   // and reopened -- same fix clock/Panel.qml uses for its date highlight.
@@ -107,16 +123,77 @@ Panel {
         anchors.fill: parent
         spacing: Style.space(14)
 
-        // ---- countdown, dimmed when paused --------------------------
-        Text {
+        // ---- countdown, dimmed when paused; +/- adjust the duration ----
+        // Wrapped in an Item, not bare in the Column, same reason as the
+        // transport row below: a Row anchored to horizontalCenter feeds back
+        // into Column.implicitWidth.
+        Item {
           width: parent.width
-          horizontalAlignment: Text.AlignHCenter
-          text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
-          color: root.contentForeground
-          opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.display
-          font.bold: true
+          height: countdownRow.height
+
+          Row {
+            id: countdownRow
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(18)
+
+            // Row positions x only, so vertical anchors are free -- and
+            // needed: a Row top-aligns its children, which left the buttons
+            // riding high against the taller countdown Text.
+            PanelActionButton {
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: root.minusGlyph
+              tooltipText: "5 minutes less"
+              foreground: root.contentForeground
+              fontSize: root.adjustGlyphSize
+              size: root.adjustHitSize
+              fontFamily: root.contentFontFamily
+              enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
+              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
+              color: root.contentForeground
+              opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.display
+              font.bold: true
+            }
+
+            PanelActionButton {
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: root.plusGlyph
+              tooltipText: "5 minutes more"
+              foreground: root.contentForeground
+              fontSize: root.adjustGlyphSize
+              size: root.adjustHitSize
+              fontFamily: root.contentFontFamily
+              enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
+              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
+            }
+          }
+
+          // angleDelta.y === 0 guard: a horizontal/touchpad side-scroll
+          // reports only x, and must not bank a step.
+          //
+          // Deliberately idle-only. adjustMinutes() would be safe while a
+          // session runs -- it carries its own guard -- but a scroll is easy
+          // to trigger by accident on a touchpad, and silently reshaping a
+          // live countdown is worse than requiring a button press. The
+          // accumulator resets with `enabled` so a banked remainder can't
+          // survive a session and fire an early step later.
+          WheelHandler {
+            enabled: !!root.hostWidget && root.hostWidget.idle
+            onEnabledChanged: root.wheelAccumulator = 0
+            onWheel: function (event) {
+              if (event.angleDelta.y === 0) return
+              var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
+              root.wheelAccumulator = wheel.remainder
+              if (wheel.steps === 0) return
+              if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)
+            }
+          }
         }
 
         // ---- play/pause + reset ---------------------------------------
