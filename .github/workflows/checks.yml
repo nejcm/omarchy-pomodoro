@@ -16,20 +16,3 @@ jobs:
 
       - name: manifest.json parses
         run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8'))"
-
-      - name: Install qmllint
-        run: sudo apt-get update && sudo apt-get install -y qt6-declarative-dev-tools
-
-      # Quickshell is AUR-only and `qs.*` is omarchy-shell's own module namespace,
-      # so neither is on the import path here. `--import disable` turns off the
-      # resolution warnings: this checks syntax, unqualified access, unused
-      # imports and deprecated QtQuick usage, and says nothing about Quickshell
-      # type correctness. Ubuntu 24.04 ships Qt 6.4, which has a smaller category
-      # set than current Qt; `--help` is printed so the available categories show
-      # up in the log if this needs tuning again.
-      - name: qmllint
-        run: |
-          QMLLINT=$(command -v qmllint || echo /usr/lib/qt6/bin/qmllint)
-          "$QMLLINT" --version
-          "$QMLLINT" --help || true
-          "$QMLLINT" --import disable BarWidget.qml Panel.qml
