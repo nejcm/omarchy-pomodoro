@@ -78,9 +78,11 @@ Panel {
   readonly property string minusGlyph: String.fromCharCode(0xf068)
   readonly property string dotGlyph: String.fromCharCode(0xb7)
 
-  // Wheel-step accumulator for the countdown's duration scroll, same shape
-  // as the audio/monitor panels' volume wheel: Util.wheelSteps banks the
-  // sub-notch remainder so a touchpad flick can't dump 20 minutes at once.
+  // Wheel-step accumulator for the countdown's duration scroll.
+  // Model.wheelSteps banks the sub-notch remainder so a touchpad flick can't
+  // dump 20 minutes at once. Kept in Model rather than borrowed from a shell
+  // singleton: it is a dozen lines of arithmetic, it is covered by
+  // Model.test.js, and it cannot break when the host shell moves a helper.
   property real wheelAccumulator: 0
 
   // Rolls TODAY's count over at midnight without needing the panel closed
@@ -127,6 +129,9 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(18)
 
+            // Left at PanelActionButton's default size, unlike the transport
+            // row above: these are secondary to play/pause and sit either
+            // side of the countdown, where a 44px hit target would crowd it.
             PanelActionButton {
               iconText: root.minusGlyph
               tooltipText: "5 minutes less"
@@ -155,16 +160,21 @@ Panel {
             }
           }
 
-          // Mirrors clock/Panel.qml's month-scroll WheelHandler, including
-          // its angleDelta.y === 0 guard for horizontal/touchpad
-          // side-scroll. Only live while idle -- a started session is
-          // adjusted through the buttons, which carry the running/paused
-          // guard via canAdjust.
+          // angleDelta.y === 0 guard: a horizontal/touchpad side-scroll
+          // reports only x, and must not bank a step.
+          //
+          // Deliberately idle-only. adjustMinutes() would be safe while a
+          // session runs -- it carries its own guard -- but a scroll is easy
+          // to trigger by accident on a touchpad, and silently reshaping a
+          // live countdown is worse than requiring a button press. The
+          // accumulator resets with `enabled` so a banked remainder can't
+          // survive a session and fire an early step later.
           WheelHandler {
             enabled: !!root.hostWidget && root.hostWidget.idle
+            onEnabledChanged: root.wheelAccumulator = 0
             onWheel: function (event) {
               if (event.angleDelta.y === 0) return
-              var wheel = Util.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
+              var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
               root.wheelAccumulator = wheel.remainder
               if (wheel.steps === 0) return
               if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)

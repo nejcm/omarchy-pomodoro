@@ -16,6 +16,7 @@ var HISTORY_CAP = 50;
 
 var MIN_MINUTES = 1;
 var MAX_MINUTES = 180;
+var DEFAULT_MINUTES = 25;
 
 // Returns a valid whole-minute duration, or `fallback` when the input is out
 // of the MIN_MINUTES..MAX_MINUTES contract. Deliberately falls back rather
@@ -26,15 +27,54 @@ function validMinutesOr(value, fallback) {
     return Math.round(value);
 }
 
-// Steps `value` (falling back to 25 like validMinutesOr) by `delta` minutes,
+// Steps `value` (falling back to DEFAULT_MINUTES like validMinutesOr) by `delta` minutes,
 // clamped to MIN_MINUTES..MAX_MINUTES. Non-numeric/non-finite delta is a no-op.
 function stepMinutes(value, delta) {
-    var base = validMinutesOr(value, 25);
+    var base = validMinutesOr(value, DEFAULT_MINUTES);
     if (typeof delta !== "number" || !isFinite(delta)) return base;
     var next = Math.round(base + delta);
     if (next < MIN_MINUTES) next = MIN_MINUTES;
     if (next > MAX_MINUTES) next = MAX_MINUTES;
     return next;
+}
+
+// An in-progress session nudged by `delta` minutes. Returns
+// {minutes, appliedMs} -- the new snapshot and the exact shift to apply to
+// the deadline or the banked remainder -- or null when the nudge is refused.
+//
+// `remainingMs` is the *live* remainder in milliseconds, never the ceil'd
+// display seconds: ceil rounds 300.001s up to 301, so a -5 measured against
+// it can leave the deadline in the past, completing the session on the next
+// tick instead of being blocked here.
+//
+// Refused when: the step clamps to a no-op, the deadline has already passed
+// (that session is complete, not adjustable -- same rule pause() applies), or
+// the shortening would consume everything that is left.
+function adjustSession(sessionMinutes, remainingMs, delta) {
+    if (typeof remainingMs !== "number" || !isFinite(remainingMs) || remainingMs <= 0) return null;
+    var next = stepMinutes(sessionMinutes, delta);
+    if (next === sessionMinutes) return null;
+    // From the clamped result, not `delta`: sessionMinutes must track exactly
+    // what the deadline gets shifted by, or the history row stops matching
+    // the minutes actually counted down.
+    var appliedMs = (next - sessionMinutes) * 60 * 1000;
+    if (remainingMs + appliedMs <= 0) return null;
+    return { minutes: next, appliedMs: appliedMs };
+}
+
+// One wheel notch is 120 angle units (Qt convention). Banks the sub-notch
+// remainder so a touchpad's fine-grained flick can't dump a whole session's
+// worth of minutes at once, and so slow scrolling still adds up to a step.
+var WHEEL_NOTCH = 120;
+
+function wheelSteps(accumulator, angleDelta) {
+    var acc = (typeof accumulator === "number" && isFinite(accumulator)) ? accumulator : 0;
+    if (typeof angleDelta !== "number" || !isFinite(angleDelta)) return { steps: 0, remainder: acc };
+    acc += angleDelta;
+    // Truncate toward zero: a banked remainder always keeps the sign of the
+    // scroll it came from, so reversing direction can't fire a step early.
+    var steps = acc > 0 ? Math.floor(acc / WHEEL_NOTCH) : Math.ceil(acc / WHEEL_NOTCH);
+    return { steps: steps, remainder: acc - steps * WHEEL_NOTCH };
 }
 
 function pushSession(history, entry, cap) {
@@ -94,5 +134,5 @@ function serializeHistory(history) {
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
+    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
 }

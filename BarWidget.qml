@@ -23,7 +23,7 @@ BarWidget {
 
     // --- settings, section 5 -----------------------------------------------
     // Trust boundary: shell.json is hand-edited, so validate through Model.
-    property int durationMinutes: Model.validMinutesOr(setting("minutes", 25), 25)
+    property int durationMinutes: Model.validMinutesOr(setting("minutes", Model.DEFAULT_MINUTES), Model.DEFAULT_MINUTES)
     readonly property bool notifyEnabled: setting("notify", true) === true
 
     // --- state, section 4 ----------------------------------------------
@@ -46,7 +46,7 @@ BarWidget {
     // Date.now() cannot drift. The idle branch tracks durationMinutes live;
     // a mid-session shell.json edit still can't reach an in-flight session,
     // because that session reads endsAt/sessionMinutes instead. The one
-    // deliberate write to a started session is adjustMinutes() below (:135).
+    // deliberate write to a started session is adjustMinutes() below.
     property double endsAt: 0       // epoch ms; meaningful while running
     // Banked remainder as of the last pause(), in *milliseconds*. Whole
     // seconds would have to round, and the only rounding consistent with the
@@ -119,11 +119,26 @@ BarWidget {
     }
 
     // --- duration adjustment, panel +/- and wheel --------------------
-    // Both route through here so the clamp lives once.
+    // Both route through Model.adjustSession so the clamp and the
+    // never-shorten-past-what-is-left guard live once, and are testable.
+
+    // Live remainder in milliseconds. Date.now(), not nowMs: the ticker
+    // advances nowMs once a second, so a guard measured against it is up to a
+    // second stale -- enough for a -5 to be allowed when it would in fact
+    // land the deadline in the past.
+    function liveRemainingMs() {
+        if (running) return endsAt - Date.now()
+        if (started) return pausedMs
+        return durationMinutes * 60 * 1000
+    }
+
     function canAdjust(delta) {
         if (idle) return Model.stepMinutes(durationMinutes, delta) !== durationMinutes
-        return Model.stepMinutes(sessionMinutes, delta) !== sessionMinutes &&
-               (delta > 0 || remainingSeconds > -delta * 60)
+        // Reading nowMs is the binding dependency that makes the panel's +/-
+        // `enabled` re-evaluate each tick; the arithmetic below deliberately
+        // does not use it (see liveRemainingMs).
+        var tick = nowMs
+        return tick >= 0 && Model.adjustSession(sessionMinutes, liveRemainingMs(), delta) !== null
     }
 
     // Idle writes durationMinutes, same as any other pending-setting change.
@@ -133,21 +148,15 @@ BarWidget {
     // running deadline (endsAt) or banked remainder (pausedMs) so the
     // countdown reflects it immediately.
     function adjustMinutes(delta) {
-        if (!canAdjust(delta)) return
         if (idle) {
             durationMinutes = Model.stepMinutes(durationMinutes, delta)
             return
         }
-        // From the clamped result, not `delta`: stepMinutes clamps at
-        // MIN/MAX, and sessionMinutes must track exactly what endsAt/pausedMs
-        // get shifted by. sessionMinutes is always a validated in-range
-        // property int here, so this subtraction can't hit stepMinutes'
-        // invalid-base fallback.
-        var next = Model.stepMinutes(sessionMinutes, delta)
-        var appliedMs = (next - sessionMinutes) * 60 * 1000
-        sessionMinutes = next
-        if (running) endsAt += appliedMs
-        else pausedMs += appliedMs
+        var step = Model.adjustSession(sessionMinutes, liveRemainingMs(), delta)
+        if (!step) return
+        sessionMinutes = step.minutes
+        if (running) endsAt += step.appliedMs
+        else pausedMs += step.appliedMs
     }
 
     Timer {
@@ -294,7 +303,7 @@ BarWidget {
         // Re-assert the setting: durationMinutes' initial binding is gone
         // after the first write (idle or not), so a shell.json edit only
         // reaches it if we reassign here.
-        durationMinutes = Model.validMinutesOr(setting("minutes", 25), 25)
+        durationMinutes = Model.validMinutesOr(setting("minutes", Model.DEFAULT_MINUTES), Model.DEFAULT_MINUTES)
         injectPanel()
     }
 
