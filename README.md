@@ -131,6 +131,25 @@ Multi-monitor: each bar surface runs its own timer and whole-file-writes
 history on completion, so a dual-head setup can produce duplicate or
 last-writer-wins history entries. See [improvements.md](improvements.md).
 
+## Development
+
+No build step and no npm dependencies. Two checks run on every pull request
+and on pushes to `master` ([.github/workflows/checks.yml](.github/workflows/checks.yml)):
+
+```bash
+node Model.test.js
+```
+
+`Model.js` holds the pure logic (formatting, validation, history parsing and
+capping) and `Model.test.js` is a plain `assert` self-check — no framework.
+The QML transition logic is not covered; see [improvements.md](improvements.md).
+
+CI additionally runs `qmllint` over the two QML files. Quickshell is AUR-only
+and `qs.*` is omarchy-shell's own module namespace, so neither is resolvable
+in CI: the lint catches syntax errors, unqualified property access, unused
+imports and deprecated QtQuick usage, but verifies nothing about Quickshell
+type correctness.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
