@@ -50,6 +50,13 @@ Panel {
   readonly property int controlGlyphSize: Style.font.display
   readonly property int controlHitSize: Style.space(44)
 
+  // The +/- pair stays secondary to play/pause, but PanelActionButton's
+  // default (14px glyph in a 22px box) reads as a right-edge row action
+  // next to a 24px countdown. One step up on each scale -- still both
+  // tokens, so they track the theme.
+  readonly property int adjustGlyphSize: Style.font.iconLarge
+  readonly property int adjustHitSize: Style.space(32)
+
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -129,19 +136,23 @@ Panel {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: Style.space(18)
 
-            // Left at PanelActionButton's default size, unlike the transport
-            // row above: these are secondary to play/pause and sit either
-            // side of the countdown, where a 44px hit target would crowd it.
+            // Row positions x only, so vertical anchors are free -- and
+            // needed: a Row top-aligns its children, which left the buttons
+            // riding high against the taller countdown Text.
             PanelActionButton {
+              anchors.verticalCenter: parent.verticalCenter
               iconText: root.minusGlyph
               tooltipText: "5 minutes less"
               foreground: root.contentForeground
+              fontSize: root.adjustGlyphSize
+              size: root.adjustHitSize
               fontFamily: root.contentFontFamily
               enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
               onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
             }
 
             Text {
+              anchors.verticalCenter: parent.verticalCenter
               text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
               color: root.contentForeground
               opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
@@ -151,9 +162,12 @@ Panel {
             }
 
             PanelActionButton {
+              anchors.verticalCenter: parent.verticalCenter
               iconText: root.plusGlyph
               tooltipText: "5 minutes more"
               foreground: root.contentForeground
+              fontSize: root.adjustGlyphSize
+              size: root.adjustHitSize
               fontFamily: root.contentFontFamily
               enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
               onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
