@@ -23,7 +23,7 @@ BarWidget {
 
     // --- settings, section 5 -----------------------------------------------
     // Trust boundary: shell.json is hand-edited, so validate through Model.
-    readonly property int durationMinutes: Model.validMinutesOr(setting("minutes", 25), 25)
+    property int durationMinutes: Model.validMinutesOr(setting("minutes", 25), 25)
     readonly property bool notifyEnabled: setting("notify", true) === true
 
     // --- state, section 4 ----------------------------------------------
@@ -43,10 +43,10 @@ BarWidget {
     // A Timer that misses intervals (suspend, event-loop starvation) fires
     // once on resume instead of catching up, so a counter would silently keep
     // the time that elapsed while it wasn't running; recomputing against
-    // Date.now() cannot drift. Staying readonly is also what lets the idle
-    // branch track durationMinutes live, with no imperative reassignment
-    // anywhere: a mid-session shell.json edit can't reach an in-flight
-    // session, because that session reads endsAt instead.
+    // Date.now() cannot drift. The idle branch tracks durationMinutes live;
+    // a mid-session shell.json edit still can't reach an in-flight session,
+    // because that session reads endsAt/sessionMinutes instead. The one
+    // deliberate write to a started session is adjustMinutes() below (:135).
     property double endsAt: 0       // epoch ms; meaningful while running
     // Banked remainder as of the last pause(), in *milliseconds*. Whole
     // seconds would have to round, and the only rounding consistent with the
@@ -116,6 +116,38 @@ BarWidget {
         persistHistory()
         if (notifyEnabled) sendCompletionNotification()
         reset()
+    }
+
+    // --- duration adjustment, panel +/- and wheel --------------------
+    // Both route through here so the clamp lives once.
+    function canAdjust(delta) {
+        if (idle) return Model.stepMinutes(durationMinutes, delta) !== durationMinutes
+        return Model.stepMinutes(sessionMinutes, delta) !== sessionMinutes &&
+               (delta > 0 || remainingSeconds > -delta * 60)
+    }
+
+    // Idle writes durationMinutes, same as any other pending-setting change.
+    // Started writes sessionMinutes instead -- the comment on that property
+    // above says a mid-session *config* edit can't relabel history; this is
+    // the deliberate exception, an explicit user nudge, applied live to the
+    // running deadline (endsAt) or banked remainder (pausedMs) so the
+    // countdown reflects it immediately.
+    function adjustMinutes(delta) {
+        if (!canAdjust(delta)) return
+        if (idle) {
+            durationMinutes = Model.stepMinutes(durationMinutes, delta)
+            return
+        }
+        // From the clamped result, not `delta`: stepMinutes clamps at
+        // MIN/MAX, and sessionMinutes must track exactly what endsAt/pausedMs
+        // get shifted by. sessionMinutes is always a validated in-range
+        // property int here, so this subtraction can't hit stepMinutes'
+        // invalid-base fallback.
+        var next = Model.stepMinutes(sessionMinutes, delta)
+        var appliedMs = (next - sessionMinutes) * 60 * 1000
+        sessionMinutes = next
+        if (running) endsAt += appliedMs
+        else pausedMs += appliedMs
     }
 
     Timer {
@@ -258,7 +290,13 @@ BarWidget {
     }
 
     onBarChanged: injectPanel()
-    onSettingsChanged: injectPanel()
+    onSettingsChanged: {
+        // Re-assert the setting: durationMinutes' initial binding is gone
+        // after the first write (idle or not), so a shell.json edit only
+        // reaches it if we reassign here.
+        durationMinutes = Model.validMinutesOr(setting("minutes", 25), 25)
+        injectPanel()
+    }
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight

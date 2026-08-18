@@ -74,7 +74,14 @@ Panel {
   readonly property string playGlyph: String.fromCharCode(0xf04b)
   readonly property string pauseGlyph: String.fromCharCode(0xf04c)
   readonly property string resetGlyph: String.fromCharCode(0xf0e2)
+  readonly property string plusGlyph: String.fromCharCode(0xf067)
+  readonly property string minusGlyph: String.fromCharCode(0xf068)
   readonly property string dotGlyph: String.fromCharCode(0xb7)
+
+  // Wheel-step accumulator for the countdown's duration scroll, same shape
+  // as the audio/monitor panels' volume wheel: Util.wheelSteps banks the
+  // sub-notch remainder so a touchpad flick can't dump 20 minutes at once.
+  property real wheelAccumulator: 0
 
   // Rolls TODAY's count over at midnight without needing the panel closed
   // and reopened -- same fix clock/Panel.qml uses for its date highlight.
@@ -107,16 +114,62 @@ Panel {
         anchors.fill: parent
         spacing: Style.space(14)
 
-        // ---- countdown, dimmed when paused --------------------------
-        Text {
+        // ---- countdown, dimmed when paused; +/- adjust the duration ----
+        // Wrapped in an Item, not bare in the Column, same reason as the
+        // transport row below: a Row anchored to horizontalCenter feeds back
+        // into Column.implicitWidth.
+        Item {
           width: parent.width
-          horizontalAlignment: Text.AlignHCenter
-          text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
-          color: root.contentForeground
-          opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.display
-          font.bold: true
+          height: countdownRow.height
+
+          Row {
+            id: countdownRow
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.space(18)
+
+            PanelActionButton {
+              iconText: root.minusGlyph
+              tooltipText: "5 minutes less"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
+              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
+            }
+
+            Text {
+              text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
+              color: root.contentForeground
+              opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.display
+              font.bold: true
+            }
+
+            PanelActionButton {
+              iconText: root.plusGlyph
+              tooltipText: "5 minutes more"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
+              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
+            }
+          }
+
+          // Mirrors clock/Panel.qml's month-scroll WheelHandler, including
+          // its angleDelta.y === 0 guard for horizontal/touchpad
+          // side-scroll. Only live while idle -- a started session is
+          // adjusted through the buttons, which carry the running/paused
+          // guard via canAdjust.
+          WheelHandler {
+            enabled: !!root.hostWidget && root.hostWidget.idle
+            onWheel: function (event) {
+              if (event.angleDelta.y === 0) return
+              var wheel = Util.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
+              root.wheelAccumulator = wheel.remainder
+              if (wheel.steps === 0) return
+              if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)
+            }
+          }
         }
 
         // ---- play/pause + reset ---------------------------------------
