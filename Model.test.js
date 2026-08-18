@@ -25,6 +25,18 @@ assert.strictEqual(M.validMinutesOr(25.7, 25), 26); // rounds
 assert.strictEqual(M.validMinutesOr(0.6, 25), 25); // raw value below range, not promoted by rounding
 assert.strictEqual(M.validMinutesOr(180.4, 25), 25); // raw value above range, not promoted by rounding
 
+// -- stepMinutes --
+assert.strictEqual(M.stepMinutes(25, 5), 30); // step up
+assert.strictEqual(M.stepMinutes(25, -5), 20); // step down
+assert.strictEqual(M.stepMinutes(3, -5), 1); // clamps at MIN_MINUTES
+assert.strictEqual(M.stepMinutes(178, 5), 180); // clamps at MAX_MINUTES
+assert.strictEqual(M.stepMinutes(1, -5), 1); // already at lower bound, no-op
+assert.strictEqual(M.stepMinutes(180, 5), 180); // already at upper bound, no-op
+assert.strictEqual(M.stepMinutes(25, "abc"), 25); // non-numeric delta, no movement
+assert.strictEqual(M.stepMinutes(25, Infinity), 25); // non-finite delta, no movement
+assert.strictEqual(M.stepMinutes(0, 5), 30); // invalid value falls back to 25 first
+assert.strictEqual(M.stepMinutes(25, 0.333), 25); // fractional delta rounds, does not leak a fraction
+
 // -- pushSession --
 (function () {
     var h0 = [];

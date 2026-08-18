@@ -14,13 +14,27 @@ function mmss(seconds) {
 // path (pushSession) and the read path (parseHistory) so they can't diverge.
 var HISTORY_CAP = 50;
 
+var MIN_MINUTES = 1;
+var MAX_MINUTES = 180;
+
 // Returns a valid whole-minute duration, or `fallback` when the input is out
-// of the 1..180 contract. Deliberately falls back rather than clamping: a
-// hand-typed 2500 in shell.json is a typo, and the default is a better guess
-// than 180.
+// of the MIN_MINUTES..MAX_MINUTES contract. Deliberately falls back rather
+// than clamping: a hand-typed 2500 in shell.json is a typo, and the default
+// is a better guess than 180.
 function validMinutesOr(value, fallback) {
-    if (typeof value !== "number" || !isFinite(value) || value < 1 || value > 180) return fallback;
+    if (typeof value !== "number" || !isFinite(value) || value < MIN_MINUTES || value > MAX_MINUTES) return fallback;
     return Math.round(value);
+}
+
+// Steps `value` (falling back to 25 like validMinutesOr) by `delta` minutes,
+// clamped to MIN_MINUTES..MAX_MINUTES. Non-numeric/non-finite delta is a no-op.
+function stepMinutes(value, delta) {
+    var base = validMinutesOr(value, 25);
+    if (typeof delta !== "number" || !isFinite(delta)) return base;
+    var next = Math.round(base + delta);
+    if (next < MIN_MINUTES) next = MIN_MINUTES;
+    if (next > MAX_MINUTES) next = MAX_MINUTES;
+    return next;
 }
 
 function pushSession(history, entry, cap) {
@@ -80,5 +94,5 @@ function serializeHistory(history) {
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { HISTORY_CAP: HISTORY_CAP, mmss: mmss, validMinutesOr: validMinutesOr, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
+    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
 }
