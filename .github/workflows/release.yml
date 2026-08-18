@@ -1,0 +1,82 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Skip the workflow's own release commits so it cannot loop. Belt and
+    # braces: a push made with the default GITHUB_TOKEN does not trigger
+    # workflows either.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'chore(release):'))
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version
+        id: next
+        run: |
+          CURRENT=$(node -p "require('./manifest.json').version")
+          if TAG=$(git describe --tags --abbrev=0 2>/dev/null); then
+            RANGE="$TAG..HEAD"
+          else
+            RANGE=""
+          fi
+          echo "current=$CURRENT, range=${RANGE:-<full history>}"
+          NEXT=$(git log $RANGE --format='%s%x00%b%x1e' | node Release.js "$CURRENT")
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: No release-worthy commits
+        if: steps.next.outputs.next == ''
+        run: echo "no release-worthy commits since the last tag"
+
+      - name: Bump manifest.json, commit, tag and push
+        if: steps.next.outputs.next != ''
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          node -e '
+            var fs = require("fs");
+            var o = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+            o.version = process.env.NEXT;
+            fs.writeFileSync("manifest.json", JSON.stringify(o, null, 2) + "\n");
+          '
+          git commit manifest.json -m "chore(release): v$NEXT"
+          # Branch first: a tag pushed ahead of it would point at a commit that
+          # is not on master if this push loses a race.
+          git push origin HEAD:master
+          # Idempotent: a re-run must not fail on an already-published tag.
+          if git ls-remote --exit-code --refs origin "refs/tags/v$NEXT" >/dev/null 2>&1; then
+            echo "tag v$NEXT already exists on origin, skipping tag push"
+          else
+            git tag "v$NEXT"
+            git push origin "v$NEXT"
+          fi
+
+      - name: Publish GitHub Release
+        if: steps.next.outputs.next != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.next.outputs.next }}
+          name: v${{ steps.next.outputs.next }}
+          generate_release_notes: true

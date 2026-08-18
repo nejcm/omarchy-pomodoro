@@ -14,5 +14,8 @@ jobs:
       - name: Model unit tests
         run: node Model.test.js
 
+      - name: Release version-bump unit tests
+        run: node Release.test.js
+
       - name: manifest.json parses
         run: node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8'))"

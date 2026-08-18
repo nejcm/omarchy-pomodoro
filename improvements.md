@@ -47,6 +47,15 @@ decision table.
   (3KB of 26KB) and none of the QML where the actual bugs have been, in
   exchange for a `package.json`, a lockfile and `node_modules` in a repo
   that otherwise clones and runs. Revisit if a second contributor arrives.
+- **`CHANGELOG.md` and npm-based release tooling** — the release workflow
+  derives the version from conventional commits with ~60 lines of plain
+  `node` (`Release.js`) rather than `np` or `semantic-release`, both of which
+  need a `package.json`, a lockfile and `node_modules` in a repo that
+  otherwise clones and runs. For the same reason there is no `CHANGELOG.md`:
+  GitHub's auto-generated release notes already list the commits per tag, and
+  a generated changelog file would be a second copy of that, kept in sync by a
+  dependency. Revisit if the release process needs anything beyond
+  "bump, tag, publish".
 - **`qmllint` on the QML files** — tried in CI and removed. Quickshell is
   AUR-only and `qs.*` is omarchy-shell's own module namespace, so neither
   resolves on a stock Ubuntu runner; because every type in both files comes
