@@ -129,6 +129,45 @@ assert.strictEqual(M.HISTORY_CAP, 50);
     assert.strictEqual(M.countToday([{ startedAt: new Date(2026, 6, 16, 12).getTime(), minutes: 25 }], now), 0);
 })();
 
+// -- groupByDay --
+(function () {
+    var now = new Date(2026, 10, 16, 12, 0, 0).getTime(); // Nov 16 2026, local noon
+    var todayOne = { startedAt: new Date(2026, 10, 16, 15, 0, 0).getTime(), minutes: 25 };
+    var todayTwo = { startedAt: new Date(2026, 10, 16, 9, 0, 0).getTime(), minutes: 25 };
+    var yesterdayOne = { startedAt: new Date(2026, 10, 15, 23, 0, 0).getTime(), minutes: 25 };
+    var yesterdayTwo = { startedAt: new Date(2026, 10, 15, 8, 0, 0).getTime(), minutes: 25 };
+    var sep12One = { startedAt: new Date(2026, 8, 12, 18, 0, 0).getTime(), minutes: 25 };
+    var sep12Two = { startedAt: new Date(2026, 8, 12, 7, 0, 0).getTime(), minutes: 25 };
+    var sep3One = { startedAt: new Date(2026, 8, 3, 18, 0, 0).getTime(), minutes: 25 };
+    var sep3Two = { startedAt: new Date(2026, 8, 3, 7, 0, 0).getTime(), minutes: 25 };
+    var history = [
+        todayOne, todayTwo, yesterdayOne, yesterdayTwo,
+        sep12One, sep12Two, sep3One,
+        { startedAt: NaN, minutes: 25 }, null,
+        { startedAt: Infinity, minutes: 25 }, sep3Two
+    ];
+
+    assert.deepStrictEqual(M.groupByDay([], now), []);
+    assert.deepStrictEqual(M.groupByDay(null, now), []);
+    assert.deepStrictEqual(M.groupByDay(history, now), [
+        { label: "TODAY", count: 2, sessions: [todayOne, todayTwo] },
+        { label: "YESTERDAY", count: 2, sessions: [yesterdayOne, yesterdayTwo] },
+        { label: "12. SEP", count: 2, sessions: [sep12One, sep12Two] },
+        { label: "3. SEP", count: 2, sessions: [sep3One, sep3Two] }
+    ]);
+})();
+
+(function () {
+    // Mar 30 00:30 minus 24 hours lands on Mar 28 in Europe/Ljubljana.
+    var now = new Date(2026, 2, 30, 0, 30, 0).getTime();
+    var yesterday = { startedAt: new Date(2026, 2, 29, 23, 30, 0).getTime(), minutes: 25 };
+    var older = { startedAt: new Date(2026, 2, 28, 23, 30, 0).getTime(), minutes: 25 };
+    assert.deepStrictEqual(M.groupByDay([yesterday, older], now), [
+        { label: "YESTERDAY", count: 1, sessions: [yesterday] },
+        { label: "28. MAR", count: 1, sessions: [older] }
+    ]);
+})();
+
 // -- parseHistory --
 assert.deepStrictEqual(
     M.parseHistory('{"version":1,"sessions":[{"startedAt":1,"minutes":25}]}'),

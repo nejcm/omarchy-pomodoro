@@ -92,9 +92,10 @@ Panel {
   // Model.test.js, and it cannot break when the host shell moves a helper.
   property real wheelAccumulator: 0
 
-  // Rolls TODAY's count over at midnight without needing the panel closed
-  // and reopened -- same fix clock/Panel.qml uses for its date highlight.
-  // Minutes precision is plenty; the count only cares that the day changed.
+  // Rolls the TODAY/YESTERDAY group labels over at midnight without needing
+  // the panel closed and reopened -- same fix clock/Panel.qml uses for its
+  // date highlight. Minutes precision is plenty; the labels only care that
+  // the day changed.
   SystemClock {
     id: clock
     precision: SystemClock.Minutes
@@ -239,11 +240,6 @@ Panel {
         }
 
         // ---- history ----------------------------------------------------
-        PanelSectionHeader {
-          text: "TODAY " + root.dotGlyph + " " + (root.hostWidget ? Model.countToday(root.hostWidget.history, clock.date.getTime()) : 0)
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-        }
 
         Text {
           visible: root.historyCount === 0
@@ -279,18 +275,35 @@ Panel {
           Column {
             id: historyRows
             width: parent.width
-            spacing: Style.space(6)
+            spacing: Style.space(12)
 
             Repeater {
-              model: root.hostWidget ? root.hostWidget.history : []
+              model: root.hostWidget ? Model.groupByDay(root.hostWidget.history, clock.date.getTime()) : []
 
-              delegate: Text {
+              delegate: Column {
+                id: dayGroup
                 required property var modelData
                 width: historyRows.width
-                text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
-                color: root.contentForeground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.body
+                spacing: Style.space(6)
+
+                PanelSectionHeader {
+                  text: dayGroup.modelData.label + " " + root.dotGlyph + " " + dayGroup.modelData.count
+                  foreground: root.contentForeground
+                  fontFamily: root.contentFontFamily
+                }
+
+                Repeater {
+                  model: dayGroup.modelData.sessions
+
+                  delegate: Text {
+                    required property var modelData
+                    width: dayGroup.width
+                    text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
+                    color: root.contentForeground
+                    font.family: root.contentFontFamily
+                    font.pixelSize: Style.font.body
+                  }
+                }
               }
             }
           }

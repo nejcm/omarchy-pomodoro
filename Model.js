@@ -105,6 +105,37 @@ function countToday(history, nowMs) {
     return count;
 }
 
+// History is practically newest-first, so group consecutive local-day runs
+// without sorting; that ordering is the contract for this view.
+function groupByDay(history, nowMs) {
+    if (!Array.isArray(history)) return [];
+    var now = new Date(nowMs);
+    var todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var yesterday = new Date(todayMidnight.getTime());
+    yesterday.setDate(yesterday.getDate() - 1);
+    var monthLabels = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    var groups = [];
+
+    for (var i = 0; i < history.length; i++) {
+        var e = history[i];
+        if (!e || typeof e.startedAt !== "number" || !isFinite(e.startedAt)) continue;
+
+        var group = groups[groups.length - 1];
+        if (group && sameLocalDay(e.startedAt, group.sessions[0].startedAt)) {
+            group.sessions.push(e);
+            group.count++;
+            continue;
+        }
+
+        var date = new Date(e.startedAt);
+        var label = sameLocalDay(e.startedAt, nowMs) ? "TODAY" :
+            sameLocalDay(e.startedAt, yesterday.getTime()) ? "YESTERDAY" :
+            date.getDate() + ". " + monthLabels[date.getMonth()];
+        groups.push({ label: label, count: 1, sessions: [e] });
+    }
+    return groups;
+}
+
 function parseHistory(text, cap) {
     if (typeof cap !== "number" || !isFinite(cap) || cap < 0) cap = HISTORY_CAP;
     if (typeof text !== "string" || text.length === 0) return [];
@@ -134,5 +165,5 @@ function serializeHistory(history) {
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, parseHistory: parseHistory, serializeHistory: serializeHistory };
+    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, groupByDay: groupByDay, parseHistory: parseHistory, serializeHistory: serializeHistory };
 }
