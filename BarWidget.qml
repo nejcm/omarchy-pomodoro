@@ -5,11 +5,18 @@ import "Model.js" as Model
 // Pomodoro bar widget -- a *view* onto Service.qml.
 //
 // A bar surface exists per monitor, so this file is instantiated once per
-// screen. It therefore owns no timer state and no persistence: all of that
-// lives on the single service instance reached through `timer` below. What
-// stays here is what is genuinely per-surface -- the button, the panel loader,
-// and the open/close contract Bar.qml's popout coordinator looks for on the
-// bar-widget root (see the panel routing section).
+// screen. It therefore owns no timer state: the countdown, the completion
+// notification and the session-history file all live on the single service
+// instance reached through `timer` below.
+//
+// It does own one write, though: persistMinutes() saves a settled idle
+// duration nudge back to this widget's shell.json entry. That cannot live on
+// the service -- the shell injects `bar` and `settings` here and neither one
+// there -- so the service says *when* and *who*, and this file does it.
+//
+// Everything else here is genuinely per-surface: the button, the panel
+// loader, and the open/close contract Bar.qml's popout coordinator looks for
+// on the bar-widget root (see the panel routing section).
 BarWidget {
     id: root
 
@@ -81,6 +88,47 @@ BarWidget {
             minutes: setting("minutes", Model.DEFAULT_MINUTES),
             notify: setting("notify", true) === true
         })
+    }
+
+    // Writes a settled idle nudge back to this widget's shell.json entry, so
+    // a duration the user converged on survives a restart instead of being
+    // discarded. Reached only through the service's debounce timer, and only
+    // by the writer it elected -- once per gesture, once per shell, not once
+    // per monitor.
+    function persistMinutes(minutes) {
+        if (!settingsReceived) return
+        if (!bar || !bar.shell || typeof bar.shell.updateEntryInline !== "function") return
+        if (!timer || typeof timer.claimSettingsWriter !== "function") return
+        if (!timer.claimSettingsWriter(root)) return
+        // Already what the entry says. Cheap, but it also covers the case
+        // where a hand-edit to shell.json landed inside the debounce window
+        // and the service adopted it: there is nothing of ours left to write.
+        if (setting("minutes", Model.DEFAULT_MINUTES) === minutes) return
+
+        // Every other key is carried over, not just the ones this plugin
+        // knows about: the host replaces the whole entry with what it is
+        // handed (shell.qml updateEntryInline), and the bar derives `settings`
+        // from the entry minus `id` (BarModel.entrySettings). A key dropped
+        // here is dropped from the user's shell.json -- `notify` included.
+        var entry = { id: root.moduleName }
+        for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
+        entry.minutes = minutes
+
+        // Local first, as the clock widget does. `settings` is what
+        // pushSettings() reads, so leaving it stale would let a later push
+        // re-announce the old duration and stomp the nudge. The write below
+        // comes straight back through shellConfig -> the bar -> `settings`
+        // carrying this same value, which is exactly why the loop settles:
+        // applySettings only acts on a value it has not already applied.
+        root.settings = entry
+        bar.shell.updateEntryInline(root.moduleName, entry)
+    }
+
+    // Rebinds when the service mounts or `_syncServices` tears it down; a
+    // null target is inert, so no guard is needed here.
+    Connections {
+        target: root.timer
+        function onDefaultMinutesCommitted(minutes) { root.persistMinutes(minutes) }
     }
 
     // Until the service mounts, `timer` is null and the widget shows the idle

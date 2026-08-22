@@ -10,9 +10,15 @@ import "Model.js" as Model
 // notifications, and N whole-file writes to the same pomodoro.json with
 // last-writer-wins. This service is instantiated exactly once per shell
 // (shell.qml `_syncServices`, mounted from `serviceHost`), so it owns all
-// timer state, the ticker, the notification, and persistence. Bar widgets are
-// views: they read this through `bar.shell.serviceFor(...)` and drive it
-// through the transitions below.
+// timer state, the ticker, the notification, and the session-history file.
+// Bar widgets are views: they read this through `bar.shell.serviceFor(...)`
+// and drive it through the transitions below.
+//
+// Persistence is split, deliberately. The history file is this file's. The
+// *settings* write -- saving an idle duration nudge back to the widget's
+// shell.json entry -- is BarWidget.qml's, because the entry is only visible
+// from the bar side; this file decides when a nudge has settled and which
+// view writes it (see the commit section near the bottom).
 //
 // Lifecycle worth knowing:
 //   - Mounted at startup for any enabled plugin declaring kind "service" with
@@ -45,6 +51,13 @@ Item {
     //   - It keeps a panel +/- nudge alive. adjustMinutes() writes
     //     durationMinutes directly while idle; without this guard the second
     //     monitor re-announcing the unchanged config would stomp the nudge.
+    //   - It absorbs the commit round-trip. A settled idle nudge is written
+    //     back to shell.json (see the commit section below), and the widget
+    //     applies the committed entry to its own `settings` *before* handing
+    //     it to the host -- so appliedMinutes has already moved onto the new
+    //     value by the time the config comes back through the bar, and every
+    //     announcement of it from then on compares equal and does nothing.
+    //     The loop settles instead of ping-ponging.
     // A real shell.json edit still lands, because the validated value differs.
     // -1 is unreachable through validMinutesOr (MIN_MINUTES is 1), so it
     // doubles as "nothing applied yet".
@@ -180,7 +193,8 @@ Item {
     }
 
     // Idle writes durationMinutes, same as any other pending-setting change
-    // (and appliedMinutes above keeps a sibling monitor from stomping it).
+    // (and appliedMinutes above keeps a sibling monitor from stomping it),
+    // and schedules the commit that makes it the persisted default.
     // Started writes sessionMinutes instead -- the comment on that property
     // above says a mid-session *config* edit can't relabel history; this is
     // the deliberate exception, an explicit user nudge, applied live to the
@@ -188,7 +202,17 @@ Item {
     // countdown reflects it immediately.
     function adjustMinutes(delta) {
         if (idle) {
-            durationMinutes = Model.stepMinutes(durationMinutes, delta)
+            var next = Model.stepMinutes(durationMinutes, delta)
+            // Clamped to the same value (the wheel can reach a bound the
+            // panel's `enabled` binding would have blocked): nothing changed,
+            // so nothing to commit.
+            if (next === durationMinutes) return
+            durationMinutes = next
+            // Idle means the user is setting the *default*, so it gets
+            // persisted. Only this branch: the started-session branch below
+            // is scoped to the session in progress and must never reach
+            // shell.json.
+            commitDebounce.restart()
             return
         }
         var step = Model.adjustSession(sessionMinutes, liveRemainingMs(), delta)
@@ -196,6 +220,58 @@ Item {
         sessionMinutes = step.minutes
         if (running) endsAt += step.appliedMs
         else pausedMs += step.appliedMs
+    }
+
+    // --- persisting an idle nudge -------------------------------------
+    // An idle nudge changes the default duration, so it belongs in
+    // shell.json rather than only in memory. The write is deliberately not
+    // ours: the shell injects `shell` into a service but never `settings`,
+    // and the value lives on the bar *entry*, which only BarWidget.qml can
+    // see. This side decides *when* a nudge has settled and *who* writes it.
+    signal defaultMinutesCommitted(int minutes)
+
+    // Debounce. One wheel flick is several adjustMinutes() calls tens of
+    // milliseconds apart, and every write re-enters synchronously as
+    // shellConfig -> barConfig -> settings -> applySettings; committing per
+    // notch would rewrite shell.json a dozen times for one gesture. The
+    // interval only has to outlast the gaps *within* an input burst -- not
+    // the round-trip, which settles on its own -- while staying short enough
+    // that the value is on disk before the hand leaves the wheel. 400ms sits
+    // between the two: an order of magnitude above wheel-notch spacing, well
+    // under the ~1s at which a save stops feeling immediate. restart(), not
+    // start(), so a burst commits once, at its final value.
+    Timer {
+        id: commitDebounce
+        interval: 400
+        repeat: false
+        // durationMinutes is read at fire time, not captured at nudge time,
+        // so the burst commits where it landed. Starting a session inside the
+        // window does not cancel it: the nudge was still a change to the
+        // default, and start() leaves durationMinutes alone.
+        onTriggered: root.defaultMinutesCommitted(root.durationMinutes)
+    }
+
+    // The elected writer. Every monitor's bar widget hears the signal above
+    // and is equally able to write, so on an N-head setup N of them would
+    // call updateEntryInline with the same entry. That is not corrupting --
+    // the host dirty-checks, so writes 2..N compare equal to the shellConfig
+    // write 1 just installed and return false -- but each still deep-clones
+    // the whole config to find that out, and leaning on the host's dirty
+    // check makes single-writing a property of omarchy-shell rather than of
+    // this plugin. Electing here keeps it ours and costs one comparison.
+    //
+    // Typed `Item`, not `var`, deliberately: QML clears an object-typed
+    // property when its object is destroyed, so unplugging the elected
+    // monitor re-opens the election on the next commit instead of stranding
+    // it on a dead widget.
+    property Item settingsWriter: null
+
+    // Claimed by the first view that asks -- which, because the widget checks
+    // its own preconditions (settings received, host API present) before
+    // calling, is the first view actually able to write.
+    function claimSettingsWriter(view) {
+        if (!settingsWriter) settingsWriter = view
+        return settingsWriter === view
     }
 
     Timer {

@@ -14,7 +14,9 @@ import qs.Ui
 import "Model.js" as Model
 
 // Pomodoro control panel: countdown + play/pause/reset + session history.
-// Service.qml owns all timer state and persistence. This panel never copies
+// Service.qml owns all timer state and the session-history file (the one
+// other write, saving an idle duration nudge back to the widget's shell.json
+// entry, is BarWidget.qml's). This panel never copies
 // that state in -- it reads live off `timer` and drives it through the
 // service's own start()/pause()/reset()/toggleRunning(), because injectPanel
 // re-fires only on bar/settings/timer changes, not every tick, so any local

@@ -77,9 +77,14 @@ gone:
 rm -f ~/.local/state/omarchy/pomodoro.json
 ```
 
-The plugin writes nothing else outside its own folder. It never edits
-`shell.json`; the `omarchy plugin enable`/`remove` commands above do, on your
-say-so.
+Outside its own folder the plugin writes exactly two files. One is the
+history file above. The other is `shell.json`, and only ever the widget's own
+entry there: nudging the duration with the panel's +/- or the wheel *while the
+timer is idle* saves that duration back to the entry's `minutes` key a moment
+later, so a length you converge on becomes the default (see Usage). It touches
+no other key of the entry, no other widget's entry, and nothing else in the
+file — the `omarchy plugin enable`/`remove` commands above are what add and
+remove the entry itself, on your say-so.
 
 ## Settings
 
@@ -87,7 +92,7 @@ Set under the widget's entry in `shell.json`:
 
 | Key | Default | Description |
 |---|---|---|
-| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25. The panel's +/- and scroll wheel can nudge this at runtime (see Usage below), but that nudge is not written back here -- it is discarded whenever this value changes in `shell.json`, and on a shell restart |
+| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25. The panel's +/- and scroll wheel nudge this at runtime (see Usage below); while the timer is idle that nudge is written back here, so the plugin edits this value as well as reads it |
 | `notify` | `true` | Send a desktop notification on session completion. Must be a JSON **boolean** |
 
 Types are checked strictly and fall back silently, so quote marks matter:
@@ -119,9 +124,12 @@ The bar builds a widget's settings by copying every key of the entry except
 while the config looked correct. The built-in `omarchy.clock` entry uses the
 same inline shape.
 
-`shell.json` hot-reloads, so a duration change applies on save. It takes effect
-on the *next* session — an edit mid-session cannot yank time out from under a
-running timer, and cannot relabel a session that has already finished.
+`shell.json` hot-reloads, so a duration change applies on save — in both
+directions: a hand-edit reaches the running shell, and an idle nudge in the
+panel comes back through the same reload as the value it just wrote. It takes
+effect on the *next* session — an edit mid-session cannot yank time out from
+under a running timer, and cannot relabel a session that has already
+finished.
 
 ## Usage
 
@@ -131,13 +139,16 @@ running timer, and cannot relabel a session that has already finished.
 - Click the widget to open the panel: the countdown flanked by +/- (5 minute
   steps, or scroll while idle), play/pause and reset below that, and a
   session log at the bottom.
-- +/- and the wheel adjust `durationMinutes` while idle. Once a session has
-  started, the buttons still work but adjust that session in place instead
-  (the running deadline or paused remainder), clamped so it can't be
-  shortened past what's left -- the wheel is idle-only. Either way the
-  adjustment is in-memory only -- it does not write `shell.json` and is
-  discarded whenever `minutes` changes there, and on a shell restart; use the
-  `minutes` setting above for a change that should stick.
+- +/- and the wheel adjust the duration while idle, and the new value is
+  saved as the default: about a third of a second after the last step it is
+  written back to this widget's `minutes` in `shell.json` (one write per
+  gesture, not one per step, and one per shell rather than one per monitor),
+  so it survives a shell restart. Other keys on the entry are preserved.
+- Once a session has started, +/- still work but adjust *that session* in
+  place instead (the running deadline or paused remainder), clamped so it
+  can't be shortened past what's left -- the wheel is idle-only. A
+  mid-session adjustment is in-memory only: it never writes `shell.json`, and
+  the next session goes back to the saved default.
 - Reset stops the timer and restores the full duration without recording a
   history row.
 - Completed sessions are recorded (no aborted sessions), newest first,
