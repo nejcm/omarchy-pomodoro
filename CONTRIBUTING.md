@@ -20,8 +20,8 @@ silently undiscoverable.
 
 The QML is not linted or covered by tests. `qmllint` was tried and removed:
 Quickshell is AUR-only and `qs.*` is omarchy-shell's own module namespace, so
-neither resolves on a stock runner, and every type in both files comes from one
-of them — the run produced 317 warnings, none of them real. See
+neither resolves on a stock runner, and every type in the QML files comes from
+one of them — the run produced 317 warnings, none of them real. See
 [improvements.md](improvements.md) for the measurement and the upgrade path.
 
 ## Dev setup
@@ -37,8 +37,8 @@ omarchy-shell shell rescanPlugins
 
 `omarchy plugin validate` rejects a symlinked plugin folder, so a working copy
 has to live at that path — there is no separate "link a local checkout" mode.
-Re-run `omarchy-shell shell rescanPlugins` after editing `BarWidget.qml` or
-`Panel.qml` to pick up changes; `Model.js` and `Release.js` changes are covered
+Re-run `omarchy-shell shell rescanPlugins` after editing `Service.qml`,
+`BarWidget.qml` or `Panel.qml` to pick up changes; `Model.js` and `Release.js` changes are covered
 by the test commands above instead of a manual reload.
 
 ## Releases

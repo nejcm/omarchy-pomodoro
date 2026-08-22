@@ -14,18 +14,29 @@ import qs.Ui
 import "Model.js" as Model
 
 // Pomodoro control panel: countdown + play/pause/reset + session history.
-// BarWidget.qml owns all timer state and persistence. This panel never copies
-// that state in -- it reads live off `hostWidget` and drives it through
-// hostWidget's own start()/pause()/reset()/toggleRunning(), because
-// injectPanel re-fires only on bar/settings changes, not every tick, so any
-// local copy would go stale within a second.
+// Service.qml owns all timer state and persistence. This panel never copies
+// that state in -- it reads live off `timer` and drives it through the
+// service's own start()/pause()/reset()/toggleRunning(), because injectPanel
+// re-fires only on bar/settings/timer changes, not every tick, so any local
+// copy would go stale within a second.
 Panel {
   id: root
   moduleName: "io.github.nejcm.pomodoro"
 
-  // Injected by BarWidget.qml's injectPanel() on bar/settings changes.
+  // Injected by BarWidget.qml's injectPanel().
   property var anchorItem: null
+
+  // Two references, deliberately not one. `hostWidget` is the bar-widget root
+  // that owns this panel -- an identity, one per monitor, used only for popout
+  // routing and anchoring. `timer` is the single Service.qml instance shared
+  // by every monitor, and is where all state and every transition lives.
   property var hostWidget: null
+
+  // Null until the service mounts (and null again if `_syncServices` tears it
+  // down), exactly like hostWidget is null before injection -- so every read
+  // below stays guarded. BarWidget re-injects on change, so this never holds a
+  // destroyed instance.
+  property var timer: null
 
   // Bar.findPanelWidget / switchPanelFrom key off the bar-widget root
   // (BarWidget.qml's `root`), not this nested panel. So route switchPanel
@@ -33,12 +44,12 @@ Panel {
   // would pass this nested panel as the owner. Same fix the clock plugin uses.
   readonly property var barIdentity: hostWidget || root
 
-  // hostWidget is injected in Loader.onLoaded, which fires after these
-  // bindings first evaluate -- hence the null guard. Hoisted here so the
-  // history views below read as plain state instead of each repeating the
-  // guard, and so the empty/non-empty pair below is visibly one predicate
-  // and its negation.
-  readonly property int historyCount: hostWidget ? hostWidget.history.length : 0
+  // timer is injected in Loader.onLoaded (and again whenever the service
+  // mounts), which fires after these bindings first evaluate -- hence the null
+  // guard. Hoisted here so the history views below read as plain state instead
+  // of each repeating the guard, and so the empty/non-empty pair below is
+  // visibly one predicate and its negation.
+  readonly property int historyCount: timer ? timer.history.length : 0
 
   // Transport controls, sized as the panel's hero affordance rather than as
   // incidental icons. The default `Style.font.icon` (= title, 14) reads as a
@@ -117,7 +128,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
-      onActivateRequested: if (root.hostWidget) root.hostWidget.toggleRunning()
+      onActivateRequested: if (root.timer) root.timer.toggleRunning()
       onTabRequested: function (direction) { root.switchPanel(direction) }
       // PanelKeyCatcher turns Up/Down/j/k into moveRequested and nothing else
       // consumes them; without this the keys are dead. dx is unused -- this
@@ -183,15 +194,15 @@ Panel {
                 fontSize: root.adjustGlyphSize
                 size: root.adjustHitSize
                 fontFamily: root.contentFontFamily
-                enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
-                onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
+                enabled: !!root.timer && root.timer.canAdjust(-5)
+                onClicked: if (root.timer) root.timer.adjustMinutes(-5)
               }
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
+                text: root.timer ? Model.mmss(root.timer.remainingSeconds) : "00:00"
                 color: root.contentForeground
-                opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
+                opacity: root.timer && root.timer.paused ? 0.6 : 1.0
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.display
                 font.bold: true
@@ -205,8 +216,8 @@ Panel {
                 fontSize: root.adjustGlyphSize
                 size: root.adjustHitSize
                 fontFamily: root.contentFontFamily
-                enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
-                onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
+                enabled: !!root.timer && root.timer.canAdjust(5)
+                onClicked: if (root.timer) root.timer.adjustMinutes(5)
               }
             }
 
@@ -220,7 +231,7 @@ Panel {
             // accumulator resets with `enabled` so a banked remainder can't
             // survive a session and fire an early step later.
             WheelHandler {
-              enabled: !!root.hostWidget && root.hostWidget.idle
+              enabled: !!root.timer && root.timer.idle
               onEnabledChanged: root.wheelAccumulator = 0
               // QQuickWheelEvent.accepted defaults to TRUE, so a bare
               // `return` still swallows the event. Every path below therefore
@@ -239,7 +250,7 @@ Panel {
                 var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
                 root.wheelAccumulator = wheel.remainder
                 if (wheel.steps === 0) return
-                if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)
+                if (root.timer) root.timer.adjustMinutes(wheel.steps * 5)
               }
             }
           }
@@ -260,13 +271,13 @@ Panel {
               spacing: Style.space(18)
 
               PanelActionButton {
-                iconText: root.hostWidget && root.hostWidget.running ? root.pauseGlyph : root.playGlyph
-                tooltipText: root.hostWidget && root.hostWidget.running ? "Pause" : "Start"
+                iconText: root.timer && root.timer.running ? root.pauseGlyph : root.playGlyph
+                tooltipText: root.timer && root.timer.running ? "Pause" : "Start"
                 foreground: root.contentForeground
                 fontFamily: root.contentFontFamily
                 fontSize: root.controlGlyphSize
                 size: root.controlHitSize
-                onClicked: if (root.hostWidget) root.hostWidget.toggleRunning()
+                onClicked: if (root.timer) root.timer.toggleRunning()
               }
 
               PanelActionButton {
@@ -277,8 +288,8 @@ Panel {
                 fontFamily: root.contentFontFamily
                 fontSize: root.controlGlyphSize
                 size: root.controlHitSize
-                enabled: !!root.hostWidget && root.hostWidget.started
-                onClicked: if (root.hostWidget) root.hostWidget.reset()
+                enabled: !!root.timer && root.timer.started
+                onClicked: if (root.timer) root.timer.reset()
               }
             }
           }
@@ -308,7 +319,7 @@ Panel {
             spacing: Style.space(12)
 
             Repeater {
-              model: root.hostWidget ? Model.groupByDay(root.hostWidget.history, clock.date.getTime()) : []
+              model: root.timer ? Model.groupByDay(root.timer.history, clock.date.getTime()) : []
 
               delegate: Column {
                 id: dayGroup

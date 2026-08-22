@@ -7,10 +7,12 @@
   "license": "MIT",
   "description": "Pomodoro countdown in the bar, with a session log",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "service"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "barWidget": "BarWidget.qml",
+    "service": "Service.qml"
   },
   "barWidget": {
     "displayName": "Pomodoro",

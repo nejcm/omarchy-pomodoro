@@ -87,7 +87,7 @@ Set under the widget's entry in `shell.json`:
 
 | Key | Default | Description |
 |---|---|---|
-| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25. The panel's +/- and scroll wheel can nudge this at runtime (see Usage below), but that nudge is not written back here -- it is discarded whenever `shell.json` is re-read (any settings change, including a shell restart) |
+| `minutes` | `25` | Session length. Must be a JSON **number** in 1–180; anything else falls back to 25. The panel's +/- and scroll wheel can nudge this at runtime (see Usage below), but that nudge is not written back here -- it is discarded whenever this value changes in `shell.json`, and on a shell restart |
 | `notify` | `true` | Send a desktop notification on session completion. Must be a JSON **boolean** |
 
 Types are checked strictly and fall back silently, so quote marks matter:
@@ -136,9 +136,8 @@ running timer, and cannot relabel a session that has already finished.
   (the running deadline or paused remainder), clamped so it can't be
   shortened past what's left -- the wheel is idle-only. Either way the
   adjustment is in-memory only -- it does not write `shell.json` and is
-  discarded whenever `shell.json` is re-read (any settings change, including
-  a shell restart); use the `minutes` setting above for a change that should
-  stick.
+  discarded whenever `minutes` changes there, and on a shell restart; use the
+  `minutes` setting above for a change that should stick.
 - Reset stops the timer and restores the full duration without recording a
   history row.
 - Completed sessions are recorded (no aborted sessions), newest first,
@@ -156,9 +155,9 @@ overwrite it, and logs the path. That protects a file damaged by a truncated
 write or a hand-edit, at the cost of new sessions going unrecorded until you
 fix or delete it.
 
-Multi-monitor: each bar surface runs its own timer and whole-file-writes
-history on completion, so a dual-head setup can produce duplicate or
-last-writer-wins history entries. See [improvements.md](improvements.md).
+Multi-monitor: the timer, the completion notification and the history file
+are owned by a single background service, not by each bar surface. Every
+monitor shows the same countdown and drives the same session.
 
 ## Contributing
 
