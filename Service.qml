@@ -5,12 +5,18 @@ import "Model.js" as Model
 
 // The one true pomodoro timer.
 //
-// A bar surface exists per monitor, so BarWidget.qml is instantiated once per
-// screen. Owning the timer there meant N independent countdowns, N completion
-// notifications, and N whole-file writes to the same pomodoro.json with
-// last-writer-wins. This service is instantiated exactly once per shell
-// (shell.qml `_syncServices`, mounted from `serviceHost`), so it owns all
-// timer state, the ticker, the notification, and the session-history file.
+// BarWidget.qml is instantiated once per rendered module slot -- zero or more
+// per screen, and the bar decides which. Owning the timer there meant N
+// independent countdowns, N completion notifications, and N whole-file writes
+// to the same pomodoro.json with last-writer-wins. The host mounts this
+// service once, keyed by plugin id (shell.qml `_syncServices`, parented to
+// `serviceHost`), and that is the instance every view resolves through
+// `serviceFor` -- so it owns all timer state, the ticker, the notification,
+// and the session-history file. "Once" is the host's contract rather than a
+// hard guarantee: its own ensureService() can still double-mount during a
+// component-load window (BarWidget.qml's mounting comment has the detail),
+// which is why this plugin no longer calls it.
+//
 // Bar widgets are views: they read this through `bar.shell.serviceFor(...)`
 // and drive it through the transitions below.
 //
@@ -274,6 +280,34 @@ Item {
         return settingsWriter === view
     }
 
+    // Latch for the things the writer can discover but must not repeat: a
+    // shell.json whose entry for this widget cannot be safely written, for
+    // any of the reasons BarWidget.persistMinutes enumerates. Warning from
+    // there directly would fire on every wheel notch; latching per view would
+    // fire once per monitor. This object is the one thing all the views
+    // already share, so the latch belongs here.
+    //
+    // Keyed by reason rather than a bare flag: the reasons are distinct
+    // config faults, and fixing one can expose the next -- a single boolean
+    // would swallow the second diagnosis and leave the user staring at a
+    // nudge that still refuses to stick. Never reset within a reason -- but
+    // the guarantee is once per *service instance*, not once per shell
+    // session: a plugin reload destroys and recreates this object, and the
+    // latch goes with it.
+    property var entryWarnings: ({})
+
+    function claimEntryWarning(reason) {
+        var key = String(reason)
+        if (entryWarnings[key]) return false
+        // A `var` object needs whole reassignment for QML to notice; nothing
+        // binds to this, but keeping the idiom honest costs one line.
+        var next = ({})
+        for (var k in entryWarnings) next[k] = entryWarnings[k]
+        next[key] = true
+        entryWarnings = next
+        return true
+    }
+
     Timer {
         id: ticker
         interval: 1000
@@ -298,8 +332,9 @@ Item {
     }
 
     // --- persistence ---------------------------------------------------
-    // Single writer now: one service per shell means the whole-file rewrite
-    // below has no concurrent peer to clobber.
+    // Single writer now: every view resolves the one service the host has
+    // recorded for this plugin id, so the whole-file rewrite below has no
+    // peer to clobber -- subject to the same mount caveat as the header.
     readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy"
     readonly property string historyPath: stateDir + "/pomodoro.json"
 

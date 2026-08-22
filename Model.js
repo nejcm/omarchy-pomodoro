@@ -159,11 +159,53 @@ function parseHistory(text, cap) {
     return out;
 }
 
+// Where this widget's id appears in the bar layout, and how much of that the
+// host's inline-settings write can actually reach. `{ total, writable }`.
+//
+// Two questions, one walk, because they disagree and the disagreement is
+// exactly what bites:
+//   - `total` counts every entry a *reader* would say claims this id,
+//     including the bare-string form (`"omarchy.clock"` instead of
+//     `{ "id": "omarchy.clock" }`) that the host's own BarModel.entryId
+//     accepts and renders a real widget from. More than one makes "the entry"
+//     ambiguous.
+//   - `writable` counts only the object form, because shell.qml's
+//     updateEntryInline matches on `arr[i].id` (376-389). A bare string is
+//     invisible to it: the write finds nothing and changes no file.
+// A caller that asked only the first question would let a bare-string entry
+// through and lose the user's change at restart; one that asked only the
+// second would miss duplicates. Both, or neither.
+//
+// Sections are the three the bar renders; anything else in the layout object
+// is not a place an entry can live.
+function surveyBarEntries(layout, id) {
+    var key = String(id || "");
+    var out = { total: 0, writable: 0 };
+    if (key === "" || !layout || typeof layout !== "object") return out;
+    var sections = ["left", "center", "right"];
+    for (var s = 0; s < sections.length; s++) {
+        var entries = layout[sections[s]];
+        if (!Array.isArray(entries)) continue;
+        for (var i = 0; i < entries.length; i++) {
+            var entry = entries[i];
+            if (typeof entry === "string") {
+                if (entry === key) out.total++;
+                continue;
+            }
+            if (!entry || typeof entry !== "object") continue;
+            if (String(entry.id || "") !== key) continue;
+            out.total++;
+            out.writable++;
+        }
+    }
+    return out;
+}
+
 function serializeHistory(history) {
     var sessions = Array.isArray(history) ? history : [];
     return JSON.stringify({ version: 1, sessions: sessions });
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, groupByDay: groupByDay, parseHistory: parseHistory, serializeHistory: serializeHistory };
+    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, mmss: mmss, validMinutesOr: validMinutesOr, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, groupByDay: groupByDay, parseHistory: parseHistory, serializeHistory: serializeHistory, surveyBarEntries: surveyBarEntries };
 }

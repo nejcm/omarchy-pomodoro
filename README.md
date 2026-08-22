@@ -142,7 +142,7 @@ finished.
 - +/- and the wheel adjust the duration while idle, and the new value is
   saved as the default: about a third of a second after the last step it is
   written back to this widget's `minutes` in `shell.json` (one write per
-  gesture, not one per step, and one per shell rather than one per monitor),
+  gesture, not one per step, and one for all monitors rather than one each),
   so it survives a shell restart. Other keys on the entry are preserved.
 - Once a session has started, +/- still work but adjust *that session* in
   place instead (the running deadline or paused remainder), clamped so it

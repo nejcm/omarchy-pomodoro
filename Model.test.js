@@ -235,4 +235,43 @@ assert.strictEqual(
 );
 assert.strictEqual(M.serializeHistory(null), '{"version":1,"sessions":[]}');
 
+// -- surveyBarEntries --
+(function () {
+    var ID = "io.github.nejcm.pomodoro";
+    var one = { left: [], center: [], right: [{ id: ID, minutes: 25 }] };
+    assert.deepStrictEqual(M.surveyBarEntries(one, ID), { total: 1, writable: 1 });
+    assert.deepStrictEqual(M.surveyBarEntries(one, "omarchy.clock"), { total: 0, writable: 0 });
+
+    // The duplicate the settings write refuses on: same id twice in one
+    // section, and split across two, which is the shape a hand-edit produces.
+    assert.deepStrictEqual(M.surveyBarEntries({ right: [{ id: ID }, { id: ID }] }, ID), { total: 2, writable: 2 });
+    assert.deepStrictEqual(M.surveyBarEntries({ left: [{ id: ID }], right: [{ id: ID }] }, ID), { total: 2, writable: 2 });
+    assert.deepStrictEqual(M.surveyBarEntries({ left: [{ id: ID }], center: [{ id: ID }], right: [{ id: ID }] }, ID), { total: 3, writable: 3 });
+
+    // A bare-string entry is a real entry the bar renders, and one the host's
+    // updateEntryInline cannot target -- counted, but not writable. This is
+    // the split the two fields exist for.
+    assert.deepStrictEqual(M.surveyBarEntries({ center: [ID] }, ID), { total: 1, writable: 0 });
+    assert.deepStrictEqual(M.surveyBarEntries({ center: [ID, { id: ID }] }, ID), { total: 2, writable: 1 });
+    assert.deepStrictEqual(M.surveyBarEntries({ left: [ID], right: [ID] }, ID), { total: 2, writable: 0 });
+    // A string that is not our id is somebody else's widget.
+    assert.deepStrictEqual(M.surveyBarEntries({ center: ["omarchy.clock"], right: [{ id: ID }] }, ID), { total: 1, writable: 1 });
+
+    // Sections the config omits, or fills with the wrong type, are skipped
+    // rather than throwing -- shell.json is hand-edited.
+    assert.deepStrictEqual(M.surveyBarEntries({ right: [{ id: ID }] }, ID), { total: 1, writable: 1 });
+    assert.deepStrictEqual(M.surveyBarEntries({ left: "nope", right: [{ id: ID }] }, ID), { total: 1, writable: 1 });
+    assert.deepStrictEqual(M.surveyBarEntries({ right: [null, 0, false, {}, { id: null }, [], { id: ID }] }, ID), { total: 1, writable: 1 });
+    // A section the host does not render is not a place an entry can live.
+    assert.deepStrictEqual(M.surveyBarEntries({ top: [{ id: ID }] }, ID), { total: 0, writable: 0 });
+
+    // No layout, no id: zeroes rather than a throw, so a caller can ask
+    // before the config has arrived.
+    assert.deepStrictEqual(M.surveyBarEntries(null, ID), { total: 0, writable: 0 });
+    assert.deepStrictEqual(M.surveyBarEntries(undefined, ID), { total: 0, writable: 0 });
+    assert.deepStrictEqual(M.surveyBarEntries("nope", ID), { total: 0, writable: 0 });
+    assert.deepStrictEqual(M.surveyBarEntries(one, ""), { total: 0, writable: 0 });
+    assert.deepStrictEqual(M.surveyBarEntries(one, null), { total: 0, writable: 0 });
+})();
+
 console.log("Model.test.js: all assertions passed");
