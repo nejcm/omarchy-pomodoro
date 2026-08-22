@@ -106,6 +106,24 @@ Panel {
   // Model.test.js, and it cannot break when the host shell moves a helper.
   property real wheelAccumulator: 0
 
+  // Duration scrolling is idle-only. adjustMinutes() carries its own guard,
+  // but a touchpad brush is easy to trigger by accident and silently
+  // reshaping a live countdown is worse than requiring a button press. The
+  // accumulator clears on the transition so a remainder banked while idle
+  // cannot survive a session and fire an early step afterwards.
+  readonly property bool wheelAdjusts: !!timer && timer.idle
+  onWheelAdjustsChanged: wheelAccumulator = 0
+
+  // Clamped scroll of the content Flickable, in text-row steps. Two callers:
+  // the keyboard cursor, and the wheel shields on the button rows. The
+  // shields cannot simply decline an event they do not want -- the button
+  // MouseAreas they sit in front of would eat it before the Flickable ever
+  // saw it -- so they move it here instead.
+  function scrollPanelRows(rows) {
+    var max = Math.max(0, panelFlick.contentHeight - panelFlick.height)
+    panelFlick.contentY = Math.max(0, Math.min(panelFlick.contentY + rows * Style.space(56), max))
+  }
+
   // Rolls the TODAY/YESTERDAY group labels over at midnight without needing
   // the panel closed and reopened -- same fix clock/Panel.qml uses for its
   // date highlight. Minutes precision is plenty; the labels only care that
@@ -138,17 +156,18 @@ Panel {
       // token agents/Panel.qml uses.
       onMoveRequested: function (dx, dy) {
         if (dy === 0) return
-        panelFlick.contentY = Math.max(0, Math.min(panelFlick.contentY + dy * Style.space(56),
-                                                   Math.max(0, panelFlick.contentHeight - panelFlick.height)))
+        root.scrollPanelRows(dy)
       }
 
       // One outer Flickable over the whole column, the shape every
       // first-party panel uses: the card is capped at Style.space(560)
       // above, so anything past that -- long history, small screen --
-      // has to scroll. Two wheel zones, not one: over the countdown an
-      // idle vertical wheel adjusts the duration (the WheelHandler below
-      // claims it); anywhere else, and over the countdown once a session
-      // is under way, the wheel reaches this Flickable and scrolls.
+      // has to scroll. It gets the wheel directly over the history and any
+      // empty space. It does *not* over the two button rows: the buttons
+      // swallow the wheel before it can travel this far, so each row carries
+      // a shield that reads the notch itself and either adjusts the duration
+      // or calls scrollPanelRows() -- see the countdown shield for why
+      // declining is not an option there.
       //
       // Flickable + Column, not ListView: ListView.contentHeight derives
       // from the delegates it instantiates, and it instantiates delegates
@@ -223,36 +242,65 @@ Panel {
               }
             }
 
-            // angleDelta.y === 0 guard: a horizontal/touchpad side-scroll
-            // reports only x, and must neither bank a step nor be swallowed.
+            // Wheel shield.
             //
-            // Deliberately idle-only. adjustMinutes() would be safe while a
-            // session runs -- it carries its own guard -- but a scroll is easy
-            // to trigger by accident on a touchpad, and silently reshaping a
-            // live countdown is worse than requiring a button press. The
-            // accumulator resets with `enabled` so a banked remainder can't
-            // survive a session and fire an early step later.
-            WheelHandler {
-              enabled: !!root.timer && root.timer.idle
-              onEnabledChanged: root.wheelAccumulator = 0
-              // QQuickWheelEvent.accepted defaults to TRUE, so a bare
-              // `return` still swallows the event. Every path below therefore
-              // sets acceptance explicitly rather than leaning on the default.
-              onWheel: function (event) {
-                // Not ours: hand the side-scroll back untouched.
-                if (event.angleDelta.y === 0) {
-                  event.accepted = false
-                  return
+            // PanelActionButton's own MouseArea (Ui/PanelActionButton.qml:81-92)
+            // declares no onWheel, and a MouseArea without one still consumes
+            // the wheel -- which is precisely why Ui/WidgetButton.qml:116 has
+            // to forward it by hand. Those MouseAreas are descendants of this
+            // wrapper, so they are hit before any handler on the wrapper
+            // itself: resting the pointer on +/-, the natural place to aim
+            // before nudging, killed the notch outright. It read as random
+            // rather than broken, because a disabled MouseArea drops out of
+            // the hit test -- at 180 the greyed-out + let the wheel through
+            // while - still ate it.
+            //
+            // A later sibling of countdownRow is hit first, so the event lands
+            // here instead, across the whole row. This Item carries no
+            // MouseArea and no hover handler, so clicks, tooltips and the
+            // disabled states still belong to the buttons underneath.
+            Item {
+              anchors.fill: parent
+
+              WheelHandler {
+                // QQuickWheelEvent.accepted defaults to TRUE, so a bare
+                // `return` still swallows the event. Every path below sets
+                // acceptance explicitly rather than leaning on the default.
+                onWheel: function (event) {
+                  // Belt and braces, and kept deliberately. WheelHandler
+                  // filters by `orientation`, which defaults to Qt.Vertical,
+                  // so a pure side-scroll should never reach this function at
+                  // all -- but that is a default this file neither sets nor
+                  // controls, and the guard is two lines. Declining is the
+                  // honest answer to an event that is not ours; it is not a
+                  // route to the Flickable, which sits behind the button
+                  // MouseAreas and would not see the notch either way.
+                  if (event.angleDelta.y === 0) {
+                    event.accepted = false
+                    return
+                  }
+                  event.accepted = true
+
+                  // Direction-checked, not just idle-checked: at a clamp the
+                  // notch cannot move the duration, and eating it there left
+                  // the panel unscrollable for as long as the pointer sat on
+                  // the countdown. Scroll rather than swallow.
+                  var direction = event.angleDelta.y > 0 ? 5 : -5
+                  if (root.wheelAdjusts && root.timer.canAdjust(direction)) {
+                    // steps === 0 means the notch banked a sub-notch
+                    // remainder -- real work, so it keeps the event instead of
+                    // also scrolling the panel.
+                    var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
+                    root.wheelAccumulator = wheel.remainder
+                    if (wheel.steps !== 0) root.timer.adjustMinutes(wheel.steps * 5)
+                    return
+                  }
+
+                  // Not adjusting: a partial notch banked for an adjustment
+                  // that is no longer happening would fire late.
+                  root.wheelAccumulator = 0
+                  root.scrollPanelRows(-event.angleDelta.y / 120)
                 }
-                // Ours from here, including the wheel.steps === 0 banking path:
-                // the outer Flickable sits under this handler, so anything left
-                // unaccepted falls through and a slow touchpad scroll that only
-                // banks a remainder would scroll the panel instead of adjusting.
-                event.accepted = true
-                var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
-                root.wheelAccumulator = wheel.remainder
-                if (wheel.steps === 0) return
-                if (root.timer) root.timer.adjustMinutes(wheel.steps * 5)
               }
             }
           }
@@ -292,6 +340,27 @@ Panel {
                 size: root.controlHitSize
                 enabled: !!root.timer && root.timer.started
                 onClicked: if (root.timer) root.timer.reset()
+              }
+            }
+
+            // The same shield, with the simpler intent: nothing on this row
+            // reads the wheel, so every notch is panel scroll. It still has to
+            // be a shield rather than nothing at all -- the play/pause and
+            // reset MouseAreas swallow the wheel exactly like the +/- ones, so
+            // without this the panel sits still under the pointer.
+            Item {
+              anchors.fill: parent
+
+              WheelHandler {
+                onWheel: function (event) {
+                  // Same not-ours guard as the countdown shield, same caveat.
+                  if (event.angleDelta.y === 0) {
+                    event.accepted = false
+                    return
+                  }
+                  event.accepted = true
+                  root.scrollPanelRows(-event.angleDelta.y / 120)
+                }
               }
             }
           }

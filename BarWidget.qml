@@ -25,16 +25,6 @@ import "Model.js" as Model
 BarWidget {
     id: root
 
-    // The service is keyed in shell.qml's `_services` by the *plugin* id from
-    // the manifest; `moduleName` is whatever id the bar *entry* carries. They
-    // are the same string here only by convention -- `omarchy plugin clone`
-    // mints a new plugin id while a copied source file keeps this constant --
-    // so service lookups use the constant and the settings write, which is
-    // about the entry, uses moduleName.
-    readonly property string pluginId: "io.github.nejcm.pomodoro"
-
-    moduleName: pluginId
-
     // Idle glyph: nf-fa-hourglass_half (U+F252). Classic Font Awesome
     // (U+F0xx-U+F2xx), the one Nerd Fonts range v3 kept intact -- unlike the
     // legacy MDI block (U+F500-U+FD46) it deleted. Monochrome, so it inherits
@@ -51,8 +41,21 @@ BarWidget {
     // existence so an older host shell without the service API degrades to a
     // visibly dead widget (idle glyph, inert panel) plus the warning below,
     // instead of throwing on every binding evaluation.
-    readonly property var timer: bar && bar.shell && typeof bar.shell.serviceFor === "function"
-                                 ? bar.shell.serviceFor(root.pluginId) : null
+    // Keyed by `moduleName`, never by a hardcoded id. The bar could only have
+    // rendered this widget by resolving its registry entry, which is stored
+    // under `String(manifest.id)` (shell.qml:678) and looked up by
+    // `canonicalWidgetId(moduleName)` (Bar.qml:1536-1539) -- and that function
+    // is the identity (Commons/Util.qml:61-63). So a rendered widget's
+    // moduleName *is* the manifest id, which is the same key `_services` uses
+    // (shell.qml:275-277). A constant would only match the unrenamed original:
+    // copy this folder, change `id` in manifest.json, enable it, and the
+    // service mounts under the new id while the lookup asks for the old one --
+    // a permanently dead hourglass with nothing logged, since serviceFor()
+    // exists and simply answers null. moduleName is strictly the safer key,
+    // and it is already what persistMinutes() writes against.
+    readonly property var timer: bar && bar.shell && moduleName !== ""
+                                 && typeof bar.shell.serviceFor === "function"
+                                 ? bar.shell.serviceFor(moduleName) : null
 
     // Mounting the service is the host's job alone -- deliberately, and this
     // widget must not "help".
