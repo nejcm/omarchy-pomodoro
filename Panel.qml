@@ -7,6 +7,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -110,7 +111,7 @@ Panel {
     centerOnBar: true
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -118,162 +119,191 @@ Panel {
       onCloseRequested: root.close()
       onActivateRequested: if (root.hostWidget) root.hostWidget.toggleRunning()
       onTabRequested: function (direction) { root.switchPanel(direction) }
+      // PanelKeyCatcher turns Up/Down/j/k into moveRequested and nothing else
+      // consumes them; without this the keys are dead. dx is unused -- this
+      // panel has no horizontal cursor. Step is one text row's worth, same
+      // token agents/Panel.qml uses.
+      onMoveRequested: function (dx, dy) {
+        if (dy === 0) return
+        panelFlick.contentY = Math.max(0, Math.min(panelFlick.contentY + dy * Style.space(56),
+                                                   Math.max(0, panelFlick.contentHeight - panelFlick.height)))
+      }
 
-      Column {
-        id: column
+      // One outer Flickable over the whole column, the shape every
+      // first-party panel uses: the card is capped at Style.space(560)
+      // above, so anything past that -- long history, small screen --
+      // has to scroll. Two wheel zones, not one: over the countdown an
+      // idle vertical wheel adjusts the duration (the WheelHandler below
+      // claims it); anywhere else, and over the countdown once a session
+      // is under way, the wheel reaches this Flickable and scrolls.
+      //
+      // Flickable + Column, not ListView: ListView.contentHeight derives
+      // from the delegates it instantiates, and it instantiates delegates
+      // to fill its own height -- self-referential. Qt won't flag it as a
+      // binding loop, it just settles wrong. Column.implicitHeight is
+      // content-derived and independent of the viewport. Model.HISTORY_CAP
+      // rows need no virtualization.
+      Flickable {
+        id: panelFlick
         anchors.fill: parent
-        spacing: Style.space(14)
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-        // ---- countdown, dimmed when paused; +/- adjust the duration ----
-        // Wrapped in an Item, not bare in the Column, same reason as the
-        // transport row below: a Row anchored to horizontalCenter feeds back
-        // into Column.implicitWidth.
-        Item {
-          width: parent.width
-          height: countdownRow.height
+        Column {
+          id: column
+          width: panelFlick.width
+          spacing: Style.space(14)
 
-          Row {
-            id: countdownRow
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(18)
+          // ---- countdown, dimmed when paused; +/- adjust the duration ----
+          // Wrapped in an Item, not bare in the Column, same reason as the
+          // transport row below: a Row anchored to horizontalCenter feeds back
+          // into Column.implicitWidth.
+          Item {
+            width: parent.width
+            height: countdownRow.height
 
-            // Row positions x only, so vertical anchors are free -- and
-            // needed: a Row top-aligns its children, which left the buttons
-            // riding high against the taller countdown Text.
-            PanelActionButton {
-              anchors.verticalCenter: parent.verticalCenter
-              iconText: root.minusGlyph
-              tooltipText: "5 minutes less"
-              foreground: root.contentForeground
-              fontSize: root.adjustGlyphSize
-              size: root.adjustHitSize
-              fontFamily: root.contentFontFamily
-              enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
-              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
+            Row {
+              id: countdownRow
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.space(18)
+
+              // Row positions x only, so vertical anchors are free -- and
+              // needed: a Row top-aligns its children, which left the buttons
+              // riding high against the taller countdown Text.
+              PanelActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.minusGlyph
+                tooltipText: "5 minutes less"
+                foreground: root.contentForeground
+                fontSize: root.adjustGlyphSize
+                size: root.adjustHitSize
+                fontFamily: root.contentFontFamily
+                enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
+                onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
+                color: root.contentForeground
+                opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.display
+                font.bold: true
+              }
+
+              PanelActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.plusGlyph
+                tooltipText: "5 minutes more"
+                foreground: root.contentForeground
+                fontSize: root.adjustGlyphSize
+                size: root.adjustHitSize
+                fontFamily: root.contentFontFamily
+                enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
+                onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
+              }
             }
 
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
-              color: root.contentForeground
-              opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.display
-              font.bold: true
+            // angleDelta.y === 0 guard: a horizontal/touchpad side-scroll
+            // reports only x, and must neither bank a step nor be swallowed.
+            //
+            // Deliberately idle-only. adjustMinutes() would be safe while a
+            // session runs -- it carries its own guard -- but a scroll is easy
+            // to trigger by accident on a touchpad, and silently reshaping a
+            // live countdown is worse than requiring a button press. The
+            // accumulator resets with `enabled` so a banked remainder can't
+            // survive a session and fire an early step later.
+            WheelHandler {
+              enabled: !!root.hostWidget && root.hostWidget.idle
+              onEnabledChanged: root.wheelAccumulator = 0
+              // QQuickWheelEvent.accepted defaults to TRUE, so a bare
+              // `return` still swallows the event. Every path below therefore
+              // sets acceptance explicitly rather than leaning on the default.
+              onWheel: function (event) {
+                // Not ours: hand the side-scroll back untouched.
+                if (event.angleDelta.y === 0) {
+                  event.accepted = false
+                  return
+                }
+                // Ours from here, including the wheel.steps === 0 banking path:
+                // the outer Flickable sits under this handler, so anything left
+                // unaccepted falls through and a slow touchpad scroll that only
+                // banks a remainder would scroll the panel instead of adjusting.
+                event.accepted = true
+                var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
+                root.wheelAccumulator = wheel.remainder
+                if (wheel.steps === 0) return
+                if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)
+              }
             }
+          }
 
-            PanelActionButton {
-              anchors.verticalCenter: parent.verticalCenter
-              iconText: root.plusGlyph
-              tooltipText: "5 minutes more"
-              foreground: root.contentForeground
-              fontSize: root.adjustGlyphSize
-              size: root.adjustHitSize
-              fontFamily: root.contentFontFamily
-              enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
-              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
+          // ---- play/pause + reset ---------------------------------------
+          // Wrapped in an Item, not bare in the Column: a Row anchored to
+          // horizontalCenter feeds back into Column.implicitWidth. Harmless
+          // here since the Column takes its width from the Flickable, but
+          // qmllint flags it, and clock/Panel.qml's hero row avoids it the
+          // same way.
+          Item {
+            width: parent.width
+            height: controlsRow.height
+
+            Row {
+              id: controlsRow
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.space(18)
+
+              PanelActionButton {
+                iconText: root.hostWidget && root.hostWidget.running ? root.pauseGlyph : root.playGlyph
+                tooltipText: root.hostWidget && root.hostWidget.running ? "Pause" : "Start"
+                foreground: root.contentForeground
+                fontFamily: root.contentFontFamily
+                fontSize: root.controlGlyphSize
+                size: root.controlHitSize
+                onClicked: if (root.hostWidget) root.hostWidget.toggleRunning()
+              }
+
+              PanelActionButton {
+                iconText: root.resetGlyph
+                tooltipText: "Reset"
+                foreground: root.contentForeground
+                hoverColor: root.bar ? root.bar.urgent : root.contentForeground
+                fontFamily: root.contentFontFamily
+                fontSize: root.controlGlyphSize
+                size: root.controlHitSize
+                enabled: !!root.hostWidget && root.hostWidget.started
+                onClicked: if (root.hostWidget) root.hostWidget.reset()
+              }
             }
           }
 
-          // angleDelta.y === 0 guard: a horizontal/touchpad side-scroll
-          // reports only x, and must not bank a step.
-          //
-          // Deliberately idle-only. adjustMinutes() would be safe while a
-          // session runs -- it carries its own guard -- but a scroll is easy
-          // to trigger by accident on a touchpad, and silently reshaping a
-          // live countdown is worse than requiring a button press. The
-          // accumulator resets with `enabled` so a banked remainder can't
-          // survive a session and fire an early step later.
-          WheelHandler {
-            enabled: !!root.hostWidget && root.hostWidget.idle
-            onEnabledChanged: root.wheelAccumulator = 0
-            onWheel: function (event) {
-              if (event.angleDelta.y === 0) return
-              var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
-              root.wheelAccumulator = wheel.remainder
-              if (wheel.steps === 0) return
-              if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)
-            }
+          PanelSeparator {
+            foreground: root.contentForeground
           }
-        }
 
-        // ---- play/pause + reset ---------------------------------------
-        // Wrapped in an Item, not bare in the Column: a Row anchored to
-        // horizontalCenter feeds back into Column.implicitWidth. Harmless
-        // here since the Column anchors.fill's, but qmllint flags it, and
-        // clock/Panel.qml's hero row avoids it the same way.
-        Item {
-          width: parent.width
-          height: controlsRow.height
+          // ---- history ----------------------------------------------------
 
-          Row {
-            id: controlsRow
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: Style.space(18)
-
-            PanelActionButton {
-              iconText: root.hostWidget && root.hostWidget.running ? root.pauseGlyph : root.playGlyph
-              tooltipText: root.hostWidget && root.hostWidget.running ? "Pause" : "Start"
-              foreground: root.contentForeground
-              fontFamily: root.contentFontFamily
-              fontSize: root.controlGlyphSize
-              size: root.controlHitSize
-              onClicked: if (root.hostWidget) root.hostWidget.toggleRunning()
-            }
-
-            PanelActionButton {
-              iconText: root.resetGlyph
-              tooltipText: "Reset"
-              foreground: root.contentForeground
-              hoverColor: root.bar ? root.bar.urgent : root.contentForeground
-              fontFamily: root.contentFontFamily
-              fontSize: root.controlGlyphSize
-              size: root.controlHitSize
-              enabled: !!root.hostWidget && root.hostWidget.started
-              onClicked: if (root.hostWidget) root.hostWidget.reset()
-            }
+          Text {
+            visible: root.historyCount === 0
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: "No sessions yet."
+            color: Qt.darker(root.contentForeground, 1.4)
+            font.family: root.contentFontFamily
+            font.pixelSize: Style.font.body
           }
-        }
 
-        PanelSeparator {
-          foreground: root.contentForeground
-        }
-
-        // ---- history ----------------------------------------------------
-
-        Text {
-          visible: root.historyCount === 0
-          width: parent.width
-          horizontalAlignment: Text.AlignHCenter
-          text: "No sessions yet."
-          color: Qt.darker(root.contentForeground, 1.4)
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.body
-        }
-
-        // Height-capped so the rows scroll instead of growing the panel
-        // off-screen. history arrives newest-first (Model.pushSession
-        // unshifts), so no re-sort needed.
-        //
-        // Flickable + Column, not ListView: ListView.contentHeight derives
-        // from the delegates it instantiates, and it instantiates delegates
-        // to fill its own height -- self-referential. Qt won't flag it as a
-        // binding loop, it just settles wrong (a sliver, or growing a row a
-        // frame). Column.implicitHeight is content-derived and independent
-        // of the viewport, so the cap works. Model.HISTORY_CAP rows need no
-        // virtualization. Matches clock/Panel.qml's calendarScroll.
-        Flickable {
-          visible: root.historyCount > 0
-          width: parent.width
-          height: Math.min(historyRows.implicitHeight, Style.space(220))
-          contentWidth: width
-          contentHeight: historyRows.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          interactive: contentHeight > height
-
+          // history arrives newest-first (Model.pushSession unshifts), so no
+          // re-sort needed.
           Column {
             id: historyRows
+            visible: root.historyCount > 0
             width: parent.width
             spacing: Style.space(12)
 
