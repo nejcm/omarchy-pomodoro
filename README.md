@@ -152,7 +152,8 @@ finished.
 - Reset stops the timer and restores the full duration without recording a
   history row.
 - Completed sessions are recorded (no aborted sessions), newest first,
-  capped at 50 rows.
+  capped at 50 rows, grouped under a day heading -- TODAY, YESTERDAY, or a
+  date -- carrying that day's count.
 - With the panel focused, Enter or Space starts and stops, and Escape closes.
 
 ## History

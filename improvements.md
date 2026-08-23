@@ -19,10 +19,11 @@ decision table.
   session: only completed rows are written. Resuming across a restart means
   writing the deadline to disk and rehydrating it on mount, plus deciding what
   a session interrupted for an hour should do (decision 6).
-- **Daily/weekly stats** — no aggregation beyond today's count exists yet;
-  history is a flat log.
-- **History grouped by day** — history is currently a flat newest-first list;
-  grouping is a panel rendering change, not a data model change.
+- **Daily/weekly stats** — the panel groups history by day and shows a count
+  per group (`Model.groupByDay`), but nothing aggregates across days: no
+  totals, no streaks, no week view. `Model.countToday` exists and is tested,
+  and is the one piece of aggregation with no call site — the bar shows an
+  hourglass whether you have done one session today or eight.
 - **Quarantining an unparseable history file** — the plugin currently refuses
   to overwrite a history file it cannot parse, which protects the existing
   data but means new sessions go unrecorded until a human fixes or removes the
