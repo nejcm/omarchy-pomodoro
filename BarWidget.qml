@@ -14,8 +14,8 @@ import "Model.js" as Model
 // notification and the session-history file all live on the single service
 // instance reached through `timer` below.
 //
-// It does own one write, though: persistMinutes() saves a settled idle
-// duration nudge back to this widget's shell.json entry. That cannot live on
+// It does own one write, though: persistSettings() saves settled setting
+// changes back to this widget's shell.json entry. That cannot live on
 // the service -- the shell injects `bar` and `settings` here and neither one
 // there -- so the service says *when* and *who*, and this file does it.
 //
@@ -52,7 +52,7 @@ BarWidget {
     // service mounts under the new id while the lookup asks for the old one --
     // a permanently dead hourglass with nothing logged, since serviceFor()
     // exists and simply answers null. moduleName is strictly the safer key,
-    // and it is already what persistMinutes() writes against.
+    // and it is already what persistSettings() writes against.
     readonly property var timer: bar && bar.shell && moduleName !== ""
                                  && typeof bar.shell.serviceFor === "function"
                                  ? bar.shell.serviceFor(moduleName) : null
@@ -111,16 +111,21 @@ BarWidget {
         if (!timer || typeof timer.applySettings !== "function") return
         timer.applySettings({
             minutes: setting("minutes", Model.DEFAULT_MINUTES),
+            breakMinutes: setting("breakMinutes", Model.DEFAULT_BREAK_MINUTES),
+            longBreakMinutes: setting("longBreakMinutes", Model.DEFAULT_LONG_BREAK_MINUTES),
+            cyclesBeforeLongBreak: setting("cyclesBeforeLongBreak", Model.DEFAULT_CYCLES),
+            mode: setting("mode", Model.MODE_TIMER),
+            autoStartBreaks: setting("autoStartBreaks", true) === true,
+            autoStartWork: setting("autoStartWork", false) === true,
             notify: setting("notify", true) === true
         })
     }
 
-    // Writes a settled idle nudge back to this widget's shell.json entry, so
-    // a duration the user converged on survives a restart instead of being
-    // discarded. Reached only through the service's debounce timer, and only
-    // by the writer it elected -- once per gesture, once per timer, not once
-    // per monitor.
-    function persistMinutes(minutes) {
+    // Writes settled setting changes back to this widget's shell.json entry,
+    // so they survive a restart instead of being discarded. Reached only
+    // through the service's debounce timer, and only by the writer it elected
+    // -- once per gesture, once per timer, not once per monitor.
+    function persistSettings(patch) {
         if (!settingsReceived) return
         if (!bar || !bar.shell || typeof bar.shell.updateEntryInline !== "function") return
         if (!timer || typeof timer.claimSettingsWriter !== "function") return
@@ -137,10 +142,10 @@ BarWidget {
         // a string entry is invisible to the write. Proceeding anyway fails
         // silently either way -- copying one entry's settings onto another
         // erases keys (shell.qml:376-389 loops without a break), and a write
-        // that matches nothing leaves a nudge that looks applied until the
+        // that matches nothing leaves a change that looks applied until the
         // next restart. So: Service.qml's historyUnreadable posture. Stop
-        // writing, name the fault once, leave the file alone. Only saving the
-        // default stops; countdown, history and in-session adjustment are
+        // writing, name the fault once, leave the file alone. Only saving
+        // settings stops; countdown, history and in-session adjustment are
         // untouched.
         //
         // This gives up the top-level `plugins` array updateEntryInline would
@@ -169,7 +174,14 @@ BarWidget {
         // Already what the entry says. Cheap, but it also covers a hand-edit
         // to shell.json that landed inside the debounce window and was
         // adopted: there is nothing of ours left to write.
-        if (setting("minutes", Model.DEFAULT_MINUTES) === minutes) return
+        var unchanged = true
+        for (var patchedKey in patch) {
+            if (setting(patchedKey) !== patch[patchedKey]) {
+                unchanged = false
+                break
+            }
+        }
+        if (unchanged) return
 
         // Every other key is carried over, not just the ones this plugin
         // knows about: the host replaces the whole entry with what it is
@@ -178,11 +190,11 @@ BarWidget {
         // user's shell.json -- `notify` included.
         var entry = { id: root.moduleName }
         for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
-        entry.minutes = minutes
+        for (var patchKey in patch) entry[patchKey] = patch[patchKey]
 
         // Local first, as the clock widget does. `settings` is what
         // pushSettings() reads, so leaving it stale would let a later push
-        // re-announce the old duration and stomp the nudge. The write comes
+        // re-announce old values and stomp the change. The write comes
         // straight back through shellConfig -> the bar -> `settings` carrying
         // this same value, which is why the loop settles: applySettings only
         // acts on a value it has not already applied.
@@ -203,14 +215,14 @@ BarWidget {
     function warnAboutEntry(reason, problem) {
         if (!timer || typeof timer.claimEntryWarning !== "function") return
         if (!timer.claimEntryWarning(reason)) return
-        console.warn("pomodoro:", problem + "; duration changes will not be saved to shell.json")
+        console.warn("pomodoro:", problem + "; settings changes will not be saved to shell.json")
     }
 
     // Rebinds when the service mounts or `_syncServices` tears it down; a
     // null target is inert, so no guard is needed here.
     Connections {
         target: root.timer
-        function onDefaultMinutesCommitted(minutes) { root.persistMinutes(minutes) }
+        function onSettingsCommitted(patch) { root.persistSettings(patch) }
     }
 
     // Until the service mounts, `timer` is null and the widget shows the idle
@@ -218,8 +230,10 @@ BarWidget {
     // bar never flashes a bogus countdown. A click in that window still opens
     // the panel; every control in there is guarded on `timer` and reads as
     // disabled, which is the honest rendering of "no timer yet".
-    readonly property string barText: !timer ? idleGlyph
-                                             : (timer.idle ? idleGlyph : Model.mmss(timer.remainingSeconds))
+    readonly property string barText: !timer || timer.idle ? idleGlyph
+        : (timer.mode === Model.MODE_POMODORO
+           && (timer.phase === Model.PHASE_SHORT || timer.phase === Model.PHASE_LONG)
+           ? String.fromCharCode(0xf0f4) + " " : "") + Model.mmss(timer.remainingSeconds)
 
     // --- panel routing contract -------------------------------------------
     // Must live on this bar-widget root, not the nested panel — Bar.qml's
