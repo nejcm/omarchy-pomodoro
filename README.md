@@ -196,8 +196,11 @@ finished.
   Enter or Space starts or pauses from the timer screen. Left/Right or h/l
   switches between Timer and Pomodoro from the timer screen while idle;
   Up/Down or j/k scrolls the history or settings screen. Tab moves to the next
-  bar panel; Shift+Tab or Backtab moves to the previous one. Escape returns
-  from history or settings to the timer screen, then closes the panel.
+  bar panel; Shift+Tab or Backtab moves to the previous one. Settings number
+  fields keep editing keys, including Tab, from reaching the bar-panel switcher.
+  While one has focus, the first Escape releases the field and the second
+  returns to the timer. Otherwise, one Escape returns from history or settings
+  to the timer; Escape on the timer screen closes the panel.
 
 ## History
 
