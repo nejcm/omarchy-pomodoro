@@ -7,7 +7,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls as QQC
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -132,13 +132,15 @@ Panel {
   readonly property bool wheelAdjusts: !!timer && timer.idle
   onWheelAdjustsChanged: wheelAccumulator = 0
 
-  // Clamped scroll of the history Flickable, in text-row steps. The keyboard
-  // cursor is the only caller: the wheel reaches that Flickable on its own,
+  // Clamped scroll of the active Flickable, in text-row steps. The keyboard
+  // cursor is the only caller: the wheel reaches either Flickable on its own,
   // Up/Down/j/k cannot.
   function scrollPanelRows(rows) {
-    if (root.screen !== "history") return
-    var max = Math.max(0, panelFlick.contentHeight - panelFlick.height)
-    panelFlick.contentY = Math.max(0, Math.min(panelFlick.contentY + rows * Style.space(56), max))
+    var flick = root.screen === "history" ? panelFlick
+              : root.screen === "settings" ? settingsFlick : null
+    if (!flick) return
+    var max = Math.max(0, flick.contentHeight - flick.height)
+    flick.contentY = Math.max(0, Math.min(flick.contentY + rows * Style.space(56), max))
   }
 
   // Rolls the TODAY/YESTERDAY group labels over at midnight without needing
@@ -171,6 +173,11 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.screen === "settings" && (
+        focusMinutesField.field.activeFocus
+        || breakMinutesField.field.activeFocus
+        || longBreakMinutesField.field.activeFocus
+        || cyclesField.field.activeFocus)
       onCloseRequested: {
         if (root.screen === "timer") root.close()
         else root.screen = "timer"
@@ -186,7 +193,7 @@ Panel {
         else if (text === "s") root.screen = "settings"
       }
       // Left/Right/h/l selects Timer or Pomodoro directly; Up/Down/j/k
-      // scrolls history one text-row step, using agents/Panel.qml's token.
+      // scrolls the active history/settings view by one text-row step.
       onMoveRequested: function (dx, dy) {
         if (dx !== 0) {
           if (root.screen === "timer" && root.timer && !root.timer.started)
@@ -233,7 +240,7 @@ Panel {
 
         ModeTabs {
           width: parent.width
-          value: root.timer ? root.timer.mode : Model.MODE_TIMER
+          value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
           enabled: !!root.timer && !root.timer.started
           foreground: root.contentForeground
           fontFamily: root.contentFontFamily
@@ -466,7 +473,7 @@ Panel {
           boundsBehavior: Flickable.StopAtBounds
           flickableDirection: Flickable.VerticalFlick
           interactive: contentHeight > height
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
 
           Column {
             id: historyColumn
@@ -539,13 +546,194 @@ Panel {
         }
       }
 
-      Column {
+      // Like historyScreen, this is an Item rather than a Column: the
+      // Flickable fills an anchor-derived height while its content owns the
+      // implicit height used to fit the panel. Making the outer item a
+      // positioner would close that sizing path back onto itself.
+      Item {
         id: settingsScreen
         anchors.top: screenActions.bottom
         anchors.topMargin: Style.space(14)
         anchors.left: parent.left
         anchors.right: parent.right
+        anchors.bottom: parent.bottom
         visible: root.screen === "settings"
+        implicitHeight: settingsColumn.implicitHeight
+        Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+
+        Flickable {
+          id: settingsFlick
+          width: parent.width
+          height: parent.height
+          contentWidth: width
+          contentHeight: settingsColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          interactive: contentHeight > height
+          QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
+
+          Column {
+            id: settingsColumn
+            width: settingsFlick.width
+            spacing: Style.space(16)
+
+            ButtonGroup {
+              width: parent.width
+              options: [
+                { value: Model.MODE_TIMER, label: "Timer" },
+                { value: Model.MODE_POMODORO, label: "Pomodoro" }
+              ]
+              value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
+              enabled: !!root.timer && !root.timer.started
+              opacity: enabled ? 1 : 0.35
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onChanged: function (value) {
+                if (root.timer) root.timer.commitSettings({ mode: value })
+              }
+            }
+
+            // QQC.SpinBox replaces its value binding after an edit, so each
+            // handler below restores the service-backed binding.
+            // Without a timer, that deliberately reverts the unapplied edit.
+            NumberField {
+              id: focusMinutesField
+              width: parent.width
+              label: "Focus minutes"
+              from: Model.MIN_MINUTES
+              to: Model.MAX_MINUTES
+              value: root.timer ? root.timer.settingsSnapshot.minutes : root.setting("minutes", Model.DEFAULT_MINUTES)
+              field.live: false
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ minutes: value })
+                focusMinutesField.field.value = Qt.binding(function () { return focusMinutesField.value })
+              }
+            }
+
+            NumberField {
+              id: breakMinutesField
+              width: parent.width
+              label: "Short break"
+              from: Model.MIN_MINUTES
+              to: Model.MAX_MINUTES
+              value: root.timer ? root.timer.settingsSnapshot.breakMinutes : root.setting("breakMinutes", Model.DEFAULT_BREAK_MINUTES)
+              field.live: false
+              enabled: !!root.timer && root.timer.mode === Model.MODE_POMODORO
+              opacity: enabled ? 1 : 0.35
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ breakMinutes: value })
+                breakMinutesField.field.value = Qt.binding(function () { return breakMinutesField.value })
+              }
+            }
+
+            NumberField {
+              id: longBreakMinutesField
+              width: parent.width
+              label: "Long break"
+              from: Model.MIN_MINUTES
+              to: Model.MAX_MINUTES
+              value: root.timer ? root.timer.settingsSnapshot.longBreakMinutes : root.setting("longBreakMinutes", Model.DEFAULT_LONG_BREAK_MINUTES)
+              field.live: false
+              enabled: !!root.timer && root.timer.mode === Model.MODE_POMODORO
+              opacity: enabled ? 1 : 0.35
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ longBreakMinutes: value })
+                longBreakMinutesField.field.value = Qt.binding(function () { return longBreakMinutesField.value })
+              }
+            }
+
+            NumberField {
+              id: cyclesField
+              width: parent.width
+              label: "Cycles before long break"
+              from: Model.MIN_CYCLES
+              to: Model.MAX_CYCLES
+              value: root.timer ? root.timer.settingsSnapshot.cyclesBeforeLongBreak : root.setting("cyclesBeforeLongBreak", Model.DEFAULT_CYCLES)
+              field.live: false
+              enabled: !!root.timer && root.timer.mode === Model.MODE_POMODORO
+              opacity: enabled ? 1 : 0.35
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ cyclesBeforeLongBreak: value })
+                cyclesField.field.value = Qt.binding(function () { return cyclesField.value })
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - autoStartBreaksSwitch.implicitWidth - parent.spacing
+                text: "Auto-start breaks"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                id: autoStartBreaksSwitch
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.timer ? root.timer.settingsSnapshot.autoStartBreaks === true : root.setting("autoStartBreaks", true) === true
+                foreground: root.contentForeground
+                onToggled: if (root.timer) root.timer.commitSettings({ autoStartBreaks: !autoStartBreaksSwitch.checked })
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - autoStartWorkSwitch.implicitWidth - parent.spacing
+                text: "Auto-start work"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                id: autoStartWorkSwitch
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.timer ? root.timer.settingsSnapshot.autoStartWork === true : root.setting("autoStartWork", false) === true
+                foreground: root.contentForeground
+                onToggled: if (root.timer) root.timer.commitSettings({ autoStartWork: !autoStartWorkSwitch.checked })
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - notifySwitch.implicitWidth - parent.spacing
+                text: "Notify on completion"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                id: notifySwitch
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.timer ? root.timer.settingsSnapshot.notify === true : root.setting("notify", true) === true
+                foreground: root.contentForeground
+                onToggled: if (root.timer) root.timer.commitSettings({ notify: !notifySwitch.checked })
+              }
+            }
+          }
+        }
       }
     }
   }
