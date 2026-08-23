@@ -21,10 +21,11 @@ import "Model.js" as Model
 // and drive it through the transitions below.
 //
 // Persistence is split, deliberately. The history file is this file's. The
-// *settings* write -- saving an idle duration nudge back to the widget's
-// shell.json entry -- is BarWidget.qml's, because the entry is only visible
-// from the bar side; this file decides when a nudge has settled and which
-// view writes it (see the commit section near the bottom).
+// *settings* write -- saving a duration nudge or a settings-screen change
+// back to the widget's shell.json entry -- is BarWidget.qml's, because the
+// entry is only visible from the bar side; this file decides when a change
+// has settled and which view writes it (see the commit section near the
+// bottom).
 //
 // Lifecycle worth knowing:
 //   - Mounted at startup for any enabled plugin declaring kind "service" with
@@ -45,29 +46,82 @@ Item {
 
     // --- settings, pushed in by the bar widget(s) ---------------------------
     // Trust boundary: shell.json is hand-edited, so validate through Model.
-    property int durationMinutes: Model.DEFAULT_MINUTES
-    property bool notifyEnabled: true
 
-    // The `minutes` value last accepted from shell.json, already validated.
-    // Two jobs, both load-bearing:
+    // Every setting this plugin has, resolved and validated -- and the object
+    // Model's pure functions take as their `settings` argument, so the cycle
+    // decides against exactly what the countdown is showing. One snapshot
+    // rather than a property per key, because the keys are read together and
+    // separate properties drift. Always reassigned whole (installSettings
+    // below): a `var` object mutated in place is invisible to the bindings
+    // that read it.
+    property var settingsSnapshot: ({
+        minutes: Model.DEFAULT_MINUTES,
+        breakMinutes: Model.DEFAULT_BREAK_MINUTES,
+        longBreakMinutes: Model.DEFAULT_LONG_BREAK_MINUTES,
+        cyclesBeforeLongBreak: Model.DEFAULT_CYCLES,
+        mode: Model.MODE_TIMER,
+        autoStartBreaks: true,
+        autoStartWork: false,
+        notify: true
+    })
+
+    // The keys a snapshot holds, listed once so the intake below and the
+    // panel's writes cannot come to know a different set.
+    readonly property var settingsKeys: ["minutes", "breakMinutes", "longBreakMinutes",
+                                         "cyclesBeforeLongBreak", "mode",
+                                         "autoStartBreaks", "autoStartWork", "notify"]
+
+    // Views read these rather than reaching into the snapshot.
+    readonly property string mode: settingsSnapshot.mode
+
+    // The duration of the *armed* phase -- what an idle countdown shows, what
+    // start() banks into a session, and what the panel's +/- steps. Derived
+    // rather than assigned, so arming a break is the single act that retargets
+    // all three (see settle()).
+    readonly property int durationMinutes: Model.phaseMinutes(phase, settingsSnapshot)
+
+    // The validated form of one key. Every value that reaches the snapshot
+    // passes through here, whether it was pushed in from shell.json or set
+    // from the panel, so a hand-edit and a panel write are held to the same
+    // contract. Booleans use !== false / === true so an absent key lands on
+    // its default rather than on `undefined`. An unknown key passes through
+    // untouched; nothing reads it, and swallowing it would hide the typo.
+    function normalizeSetting(key, value) {
+        if (key === "minutes") return Model.validMinutesOr(value, Model.DEFAULT_MINUTES)
+        if (key === "breakMinutes") return Model.validMinutesOr(value, Model.DEFAULT_BREAK_MINUTES)
+        if (key === "longBreakMinutes") return Model.validMinutesOr(value, Model.DEFAULT_LONG_BREAK_MINUTES)
+        if (key === "cyclesBeforeLongBreak") return Model.validCyclesOr(value, Model.DEFAULT_CYCLES)
+        if (key === "mode") return Model.validModeOr(value, Model.MODE_TIMER)
+        if (key === "autoStartBreaks") return value !== false
+        if (key === "autoStartWork") return value === true
+        if (key === "notify") return value !== false
+        return value
+    }
+
+    // The values last accepted from shell.json, already validated, keyed the
+    // same as the snapshot. Three jobs, all load-bearing, and all of them
+    // per key -- a nudge to `breakMinutes` must not make an unrelated `mode`
+    // change look already-applied:
     //   - Idempotence. Every bar widget pushes settings, and it pushes them
     //     again whenever its `timer` binding re-evaluates. On a dual-head
     //     setup that is several identical calls; only a genuine change may
     //     have an effect.
-    //   - It keeps a panel +/- nudge alive. adjustMinutes() writes
-    //     durationMinutes directly while idle; without this guard the second
-    //     monitor re-announcing the unchanged config would stomp the nudge.
+    //   - It keeps a panel +/- nudge alive. adjustMinutes() writes the armed
+    //     phase's key straight into the snapshot while idle; without this
+    //     guard the second monitor re-announcing the unchanged config would
+    //     stomp the nudge.
     //   - It absorbs the commit round-trip. A settled idle nudge is written
     //     back to shell.json (see the commit section below), and the widget
     //     applies the committed entry to its own `settings` *before* handing
-    //     it to the host -- so appliedMinutes has already moved onto the new
-    //     value by the time the config comes back through the bar, and every
+    //     it to the host -- so this map has already moved onto the new value
+    //     by the time the config comes back through the bar, and every
     //     announcement of it from then on compares equal and does nothing.
     //     The loop settles instead of ping-ponging.
     // A real shell.json edit still lands, because the validated value differs.
-    // -1 is unreachable through validMinutesOr (MIN_MINUTES is 1), so it
-    // doubles as "nothing applied yet".
-    property int appliedMinutes: -1
+    // A key absent from the map compares unequal to anything normalizeSetting
+    // can return, so it doubles as "nothing applied yet" -- the job the -1
+    // sentinel did when this was a single int.
+    property var appliedSettings: ({})
 
     // Settings arrive as a plain object of already-resolved values (the bar
     // widget applies its own `setting()` fallbacks first, since only it can
@@ -76,18 +130,56 @@ Item {
     // if it mounts first, the widget pushes on settings/bar changes anyway.
     function applySettings(obj) {
         var src = obj || ({})
-        var minutes = Model.validMinutesOr(src.minutes, Model.DEFAULT_MINUTES)
-        if (minutes !== appliedMinutes) {
-            appliedMinutes = minutes
-            durationMinutes = minutes
+        var patch = ({})
+        var applied = null
+        for (var i = 0; i < settingsKeys.length; i++) {
+            var key = settingsKeys[i]
+            var value = normalizeSetting(key, src[key])
+            if (appliedSettings[key] === value) continue
+            if (!applied) {
+                applied = ({})
+                for (var k in appliedSettings) applied[k] = appliedSettings[k]
+            }
+            applied[key] = value
+            patch[key] = value
         }
-        notifyEnabled = src.notify !== false
+        // Nothing genuinely changed: the common case on a re-push, and the
+        // one the three jobs above depend on being a no-op.
+        if (!applied) return
+        appliedSettings = applied
+        installSettings(patch)
+    }
+
+    // The one place the snapshot moves. Everything that changes a setting --
+    // the intake above, an idle nudge, the panel -- goes through here, so the
+    // reassign-whole rule and the mode guard below are written once.
+    function installSettings(patch) {
+        var next = ({})
+        for (var k in settingsSnapshot) next[k] = settingsSnapshot[k]
+        for (var p in patch) next[p] = patch[p]
+        settingsSnapshot = next
+
+        // Timer mode has no breaks, so it must not be left armed on one. The
+        // reachable case: with autoStartBreaks off a finished work interval
+        // arms a break without starting it, and armed is neither running nor
+        // paused -- so the panel's mode switch is live and the user can flip
+        // to Timer right then, leaving a five-minute countdown sitting there
+        // as the "next session". Only while idle: the switch is disabled for
+        // a started session (Phase D) precisely because swapping the state
+        // machine out from under a live countdown is the one thing it must
+        // not do, and this side keeps that promise rather than trusting it.
+        if (!started && next.mode === Model.MODE_TIMER && phase !== Model.PHASE_WORK)
+            phase = Model.PHASE_WORK
     }
 
     // --- state -------------------------------------------------------------
     property bool running: false
     property bool started: false
     property var history: []
+    // The interval that is armed or running. Only settle() and reset() move
+    // it, and in timer mode it never leaves PHASE_WORK (installSettings above
+    // holds that, Model.completion never returns a break as `next`).
+    property string phase: Model.PHASE_WORK
     // Epoch milliseconds (~1.77e12 today) overflows QML's 32-bit int
     // (max ~2.15e9) — must be double, not int. Same for endsAt and nowMs.
     property double sessionStartedAt: 0
@@ -114,6 +206,20 @@ Item {
     // where it belongs: in the display bindings on the views.
     property double pausedMs: 0
     property double nowMs: 0        // advanced by the ticker
+
+    // A wall-clock day source independent of the countdown ticker. It catches
+    // suspend and only changes once a minute, so countToday() does not scan
+    // history once a second while a session runs.
+    SystemClock {
+        id: cycleClock
+        precision: SystemClock.Minutes
+    }
+    readonly property double cycleClockMs: cycleClock.date.getTime()
+
+    // Completed *work* intervals today -- the cycle position, derived from
+    // history rather than counted in memory so it survives a reload. Breaks
+    // are not logged, so nothing else can move it.
+    readonly property int pomodorosToday: Model.countToday(history, cycleClockMs)
 
     readonly property int remainingSeconds: running ? Math.max(0, Math.ceil((endsAt - nowMs) / 1000))
                                                     : (started ? Math.max(0, Math.ceil(pausedMs / 1000))
@@ -149,7 +255,9 @@ Item {
         // there would discard a session that had in fact finished. Finish it
         // instead; a session past its deadline is complete, not pausable.
         if (endsAt - nowMs <= 0) {
-            complete()
+            // Pause still returns stopped when completion would normally
+            // auto-start the next phase.
+            complete(false)
             return
         }
         pausedMs = endsAt - nowMs
@@ -160,7 +268,12 @@ Item {
         if (!started) return
         running = false
         started = false
-        // No history row. Never auto-starts.
+        // Back to work whatever was abandoned: reset is the user saying "not
+        // this", and leaving them armed on the break they just rejected is a
+        // worse answer than the phase every cycle begins from. The cycle
+        // position is untouched -- it lives in history, which this does not
+        // write. No history row. Never auto-starts.
+        phase = Model.PHASE_WORK
     }
 
     function toggleRunning() {
@@ -168,11 +281,61 @@ Item {
         else start()
     }
 
-    function complete() {
-        history = Model.pushSession(history, { startedAt: sessionStartedAt, minutes: sessionMinutes })
-        persistHistory()
-        if (notifyEnabled) sendCompletionNotification()
-        reset()
+    // Applies what Model.completion decided. The decision itself is pure and
+    // tested (Model.js); this only carries it out, in the order a reader
+    // would expect: record, announce, arm.
+    function complete(allowAutoStart) {
+        // Capture once so the count and projected row use the same instant,
+        // including across midnight.
+        var completionClockMs = root.cycleClockMs
+        var decision = Model.completion({
+            phase: root.phase,
+            sessionStartedAt: root.sessionStartedAt,
+            sessionMinutes: root.sessionMinutes,
+            pomodorosToday: Model.countToday(root.history, completionClockMs),
+            // The completion instant, and deliberately the same clock
+            // pomodorosToday was counted against: Model.projectedCount uses
+            // the two together to decide whether the row it is about to log
+            // lands on the day that count is scoped to. A session begun 23:58
+            // and finished 00:03 belongs to yesterday, and handing over a
+            // different clock (or none) would decide this transition against
+            // a number countToday() will not reproduce a moment later.
+            nowMs: completionClockMs
+        }, root.settingsSnapshot)
+
+        // A break has no row: a pomodoro is a completed *work* interval.
+        if (decision.log) {
+            history = Model.pushSession(history, decision.log)
+            persistHistory()
+        }
+        // Already gated on the `notify` setting inside the decision.
+        if (decision.notify) sendCompletionNotification(decision.notify)
+        settle(decision, allowAutoStart)
+    }
+
+    // Ends a break early. Breaks only -- which also makes it inert in timer
+    // mode, where the phase never leaves work -- and it logs nothing: a break
+    // that was skipped was not worked, and one that was rested through is not
+    // a pomodoro either. Reachable both while the break runs and while it
+    // merely sits armed; both mean the same thing from the user's side.
+    function skipBreak() {
+        if (phase !== Model.PHASE_SHORT && phase !== Model.PHASE_LONG) return
+        settle(Model.skip({ phase: root.phase }, root.settingsSnapshot))
+    }
+
+    // The single settle path: the one place a next phase is installed, shared
+    // by complete() and skipBreak() so the cycle cannot advance two different
+    // ways. Clears exactly the ticker state the reset() call at the tail of
+    // the old complete() cleared, and no more: endsAt, pausedMs and
+    // sessionMinutes are left as they are because `started` is now false, and
+    // the next start() reads none of them -- it arms from durationMinutes.
+    function settle(decision, allowAutoStart) {
+        running = false
+        started = false
+        // Before start(), so the new session banks the armed phase's duration
+        // rather than the finished one's.
+        phase = decision.next.phase
+        if (decision.autoStart && allowAutoStart !== false) start()
     }
 
     // --- duration adjustment, panel +/- and wheel --------------------
@@ -198,9 +361,10 @@ Item {
         return tick >= 0 && Model.adjustSession(sessionMinutes, liveRemainingMs(), delta) !== null
     }
 
-    // Idle writes durationMinutes, same as any other pending-setting change
-    // (and appliedMinutes above keeps a sibling monitor from stomping it),
-    // and schedules the commit that makes it the persisted default.
+    // Idle writes the armed phase's key into the snapshot, same as any other
+    // pending-setting change (and appliedSettings above keeps a sibling
+    // monitor from stomping it), and schedules the commit that makes it the
+    // persisted default -- durationMinutes follows, because it reads that key.
     // Started writes sessionMinutes instead -- the comment on that property
     // above says a mid-session *config* edit can't relabel history; this is
     // the deliberate exception, an explicit user nudge, applied live to the
@@ -213,12 +377,14 @@ Item {
             // panel's `enabled` binding would have blocked): nothing changed,
             // so nothing to commit.
             if (next === durationMinutes) return
-            durationMinutes = next
-            // Idle means the user is setting the *default*, so it gets
+            // Idle means the user is setting the *default* for the phase they
+            // are looking at, so it goes to that phase's key and gets
             // persisted. Only this branch: the started-session branch below
             // is scoped to the session in progress and must never reach
             // shell.json.
-            commitDebounce.restart()
+            var patch = ({})
+            patch[settingsKeyFor(phase)] = next
+            commitSettings(patch)
             return
         }
         var step = Model.adjustSession(sessionMinutes, liveRemainingMs(), delta)
@@ -228,13 +394,60 @@ Item {
         else pausedMs += step.appliedMs
     }
 
-    // --- persisting an idle nudge -------------------------------------
-    // An idle nudge changes the default duration, so it belongs in
+    // --- persisting a settings change ---------------------------------
+    // An idle nudge changes a phase's default duration, and the panel's
+    // settings screen changes whatever it was pointed at; both belong in
     // shell.json rather than only in memory. The write is deliberately not
     // ours: the shell injects `shell` into a service but never `settings`,
-    // and the value lives on the bar *entry*, which only BarWidget.qml can
-    // see. This side decides *when* a nudge has settled and *who* writes it.
-    signal defaultMinutesCommitted(int minutes)
+    // and the values live on the bar *entry*, which only BarWidget.qml can
+    // see. This side decides *when* a change has settled and *who* writes it.
+    //
+    // The payload is a `{key: value}` patch rather than a bare number,
+    // because there are now eight keys and a nudge writes whichever one the
+    // armed phase uses.
+    signal settingsCommitted(var patch)
+
+    // Which key an idle nudge is editing. The armed phase decides it, which
+    // is the same thing the countdown above the +/- is showing.
+    function settingsKeyFor(p) {
+        if (p === Model.PHASE_SHORT) return "breakMinutes"
+        if (p === Model.PHASE_LONG) return "longBreakMinutes"
+        return "minutes"
+    }
+
+    // The keys awaiting a write, as a set -- values are not banked here, only
+    // the fact that the key is dirty, so the timer can read each one where it
+    // finally landed. Cleared when it fires.
+    property var pendingCommit: ({})
+
+    // Set settings from the UI: applied now, persisted once the burst
+    // settles. The panel's settings screen calls this with whatever field it
+    // changed, and the idle nudge above calls it with one duration key -- so
+    // both take the same route to disk and neither writes shell.json itself.
+    //
+    // Deliberately does not touch appliedSettings: that map records what
+    // *shell.json* last said, and moving it here would make a sibling
+    // monitor's re-push of the old config look like a genuine change and
+    // stomp what the user just set. It moves on the round-trip instead.
+    function commitSettings(patch) {
+        if (!patch || typeof patch !== "object") return
+        var next = ({})
+        var pending = ({})
+        for (var k in pendingCommit) pending[k] = pendingCommit[k]
+        var any = false
+        for (var key in patch) {
+            var value = normalizeSetting(key, patch[key])
+            // Already what we hold. Nothing to apply, and nothing to write.
+            if (settingsSnapshot[key] === value) continue
+            next[key] = value
+            pending[key] = true
+            any = true
+        }
+        if (!any) return
+        installSettings(next)
+        pendingCommit = pending
+        commitDebounce.restart()
+    }
 
     // Debounce. One wheel flick is several adjustMinutes() calls tens of
     // milliseconds apart, and every write re-enters synchronously as
@@ -250,11 +463,22 @@ Item {
         id: commitDebounce
         interval: 400
         repeat: false
-        // durationMinutes is read at fire time, not captured at nudge time,
-        // so the burst commits where it landed. Starting a session inside the
-        // window does not cancel it: the nudge was still a change to the
-        // default, and start() leaves durationMinutes alone.
-        onTriggered: root.defaultMinutesCommitted(root.durationMinutes)
+        // The snapshot is read at fire time, not captured at change time, so
+        // a burst commits where it landed -- and one patch carries every key
+        // the burst touched, so a settings screen edited in a hurry is still
+        // one write. Starting a session inside the window does not cancel it:
+        // the nudge was still a change to the default, and start() leaves the
+        // snapshot alone.
+        onTriggered: {
+            var patch = ({})
+            var any = false
+            for (var key in root.pendingCommit) {
+                patch[key] = root.settingsSnapshot[key]
+                any = true
+            }
+            root.pendingCommit = ({})
+            if (any) root.settingsCommitted(patch)
+        }
     }
 
     // The elected writer. Every monitor's bar widget hears the signal above
@@ -282,7 +506,7 @@ Item {
 
     // Latch for the things the writer can discover but must not repeat: a
     // shell.json whose entry for this widget cannot be safely written, for
-    // any of the reasons BarWidget.persistMinutes enumerates. Warning from
+    // any of the reasons BarWidget's settings write enumerates. Warning from
     // there directly would fire on every wheel notch; latching per view would
     // fire once per monitor. This object is the one thing all the views
     // already share, so the latch belongs here.
@@ -325,10 +549,13 @@ Item {
     // directly, so nothing here is parsed by a shell and no argument needs
     // quoting. Also drops the dependency on bar.run being present, which a
     // service has no access to anyway.
-    function sendCompletionNotification() {
+    // Takes the copy the completion decision returned rather than composing
+    // its own: what just ended is the decision's to know (a break announces
+    // itself differently, and only it knows the phase the session actually
+    // ran under).
+    function sendCompletionNotification(notify) {
         Quickshell.execDetached(["notify-send", "-a", "Pomodoro", "-u", "normal",
-                                 "Pomodoro complete",
-                                 root.sessionMinutes + " minute session done"])
+                                 notify.title, notify.body])
     }
 
     // --- persistence ---------------------------------------------------
