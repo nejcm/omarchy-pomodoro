@@ -52,6 +52,19 @@ Panel {
   // of each repeating the guard, and so the empty/non-empty pair below is
   // visibly one predicate and its negation.
   readonly property int historyCount: timer ? timer.history.length : 0
+  readonly property int historyRenderLimit: 200
+  readonly property var renderedHistory: timer ? timer.history.slice(0, historyRenderLimit) : []
+    readonly property var historyGroups: root.screen === "history"
+        ? Model.groupByDay(timer ? timer.history : [], clock.date.getTime())
+        : []
+  readonly property var renderedHistoryGroups: Model.groupByDay(renderedHistory, clock.date.getTime())
+  readonly property int cycleCount: timer ? timer.settingsSnapshot.cyclesBeforeLongBreak : Model.DEFAULT_CYCLES
+  readonly property int completedCycleCount: !timer ? 0
+    : timer.phase === Model.PHASE_LONG ? cycleCount
+    : timer.pomodorosToday % cycleCount
+
+  property string screen: "timer"
+  onOpenedChanged: if (opened) screen = "timer"
 
   // Transport controls, sized as the panel's hero affordance rather than as
   // incidental icons. The default `Style.font.icon` (= title, 14) reads as a
@@ -98,6 +111,11 @@ Panel {
   readonly property string plusGlyph: String.fromCharCode(0xf067)
   readonly property string minusGlyph: String.fromCharCode(0xf068)
   readonly property string dotGlyph: String.fromCharCode(0xb7)
+  readonly property string filledDotGlyph: String.fromCharCode(0x25cf)
+  readonly property string hollowDotGlyph: String.fromCharCode(0x25cb)
+  readonly property string settingsGlyph: String.fromCharCode(0xf013)
+  readonly property string historyGlyph: String.fromCharCode(0xf03a)
+  readonly property string skipGlyph: String.fromCharCode(0xf04e)
 
   // Wheel-step accumulator for the countdown's duration scroll.
   // Model.wheelSteps banks the sub-notch remainder so a touchpad flick can't
@@ -118,6 +136,7 @@ Panel {
   // cursor is the only caller: the wheel reaches that Flickable on its own,
   // Up/Down/j/k cannot.
   function scrollPanelRows(rows) {
+    if (root.screen !== "history") return
     var max = Math.max(0, panelFlick.contentHeight - panelFlick.height)
     panelFlick.contentY = Math.max(0, Math.min(panelFlick.contentY + rows * Style.space(56), max))
   }
@@ -144,32 +163,95 @@ Panel {
     centerOnBar: false
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(headColumn.implicitHeight + Style.space(14) + historyColumn.implicitHeight, Style.space(560))
+    contentHeight: panel.fittedContentHeight(screenActions.implicitHeight + Style.space(14) + (
+      root.screen === "timer" ? headColumn.implicitHeight
+      : root.screen === "history" ? historyScreen.implicitHeight
+      : settingsScreen.implicitHeight), Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
-      onActivateRequested: if (root.timer) root.timer.toggleRunning()
+      onCloseRequested: {
+        if (root.screen === "timer") root.close()
+        else root.screen = "timer"
+      }
+      onActivateRequested: {
+        if (root.screen === "timer" && root.timer) root.timer.toggleRunning()
+      }
       onTabRequested: function (direction) { root.switchPanel(direction) }
-      // PanelKeyCatcher turns Up/Down/j/k into moveRequested and nothing else
-      // consumes them; without this the keys are dead. dx is unused -- this
-      // panel has no horizontal cursor. Step is one text row's worth, same
-      // token agents/Panel.qml uses.
+      onTextKey: function (text) {
+        text = text.toLowerCase()
+        if (text === "t") root.screen = "timer"
+        else if (text === "y") root.screen = "history"
+        else if (text === "s") root.screen = "settings"
+      }
+      // Left/Right/h/l selects Timer or Pomodoro directly; Up/Down/j/k
+      // scrolls history one text-row step, using agents/Panel.qml's token.
       onMoveRequested: function (dx, dy) {
+        if (dx !== 0) {
+          if (root.screen === "timer" && root.timer && !root.timer.started)
+            root.timer.commitSettings({ mode: dx < 0 ? Model.MODE_TIMER : Model.MODE_POMODORO })
+          return
+        }
         if (dy === 0) return
         root.scrollPanelRows(dy)
       }
 
-      // Fixed head, scrolling tail. The countdown and the transport row keep
-      // their place and only the history moves, so the controls never slide
-      // out from under a pointer that is aiming at them.
+      Row {
+        id: screenActions
+        anchors.top: parent.top
+        anchors.right: parent.right
+        spacing: Style.spacing.sm
+
+        PanelActionButton {
+          iconText: root.settingsGlyph
+                tooltipText: "Settings (S)"
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          bordered: root.screen === "settings"
+          onClicked: root.screen = root.screen === "settings" ? "timer" : "settings"
+        }
+
+        PanelActionButton {
+          iconText: root.historyGlyph
+                tooltipText: "History (Y)"
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          bordered: root.screen === "history"
+          onClicked: root.screen = root.screen === "history" ? "timer" : "history"
+        }
+      }
+
       Column {
         id: headColumn
-        anchors.top: parent.top
+        anchors.top: screenActions.bottom
+        anchors.topMargin: Style.space(14)
         anchors.left: parent.left
         anchors.right: parent.right
         spacing: Style.space(14)
+        visible: root.screen === "timer"
+
+        ModeTabs {
+          width: parent.width
+          value: root.timer ? root.timer.mode : Model.MODE_TIMER
+          enabled: !!root.timer && !root.timer.started
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          onChanged: function (value) {
+            if (root.timer) root.timer.commitSettings({ mode: value })
+          }
+        }
+
+        Text {
+          visible: root.timer && root.timer.mode === Model.MODE_POMODORO
+          width: parent.width
+          text: root.timer ? Model.phaseLabel(root.timer.phase) : ""
+          horizontalAlignment: Text.AlignHCenter
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
 
         // ---- countdown, dimmed when paused; +/- adjust the duration ----
         // Wrapped in an Item, not bare in the Column, same reason as the
@@ -283,11 +365,35 @@ Panel {
           }
         }
 
+        Item {
+          width: parent.width
+          height: cycleDots.height
+          visible: root.timer && root.timer.mode === Model.MODE_POMODORO
+
+          Row {
+            id: cycleDots
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.spacing.sm
+
+            Repeater {
+              model: root.cycleCount
+
+              delegate: Text {
+                required property int index
+                text: index < root.completedCycleCount ? root.filledDotGlyph : root.hollowDotGlyph
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+            }
+          }
+        }
+
         // ---- play/pause + reset ---------------------------------------
         // Wrapped in an Item, not bare in the Column: a Row anchored to
         // horizontalCenter feeds back into Column.implicitWidth. Harmless
         // here since headColumn takes its width from its anchors, but
-        // qmllint flags it, and clock/Panel.qml's hero row avoids it the
+        // the linter flags it, and clock/Panel.qml's hero row avoids it the
         // same way.
         Item {
           width: parent.width
@@ -309,6 +415,18 @@ Panel {
             }
 
             PanelActionButton {
+              visible: root.timer && (root.timer.phase === Model.PHASE_SHORT
+                                      || root.timer.phase === Model.PHASE_LONG)
+              iconText: root.skipGlyph
+              tooltipText: "Skip break"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              fontSize: root.controlGlyphSize
+              size: root.controlHitSize
+              onClicked: if (root.timer) root.timer.skipBreak()
+            }
+
+            PanelActionButton {
               iconText: root.resetGlyph
               tooltipText: "Reset"
               foreground: root.contentForeground
@@ -321,89 +439,113 @@ Panel {
             }
           }
         }
-
-        PanelSeparator {
-          foreground: root.contentForeground
-        }
       }
 
-      // Flickable + Column, not ListView: ListView.contentHeight derives from
-      // the delegates it instantiates, and it instantiates delegates to fill
-      // its own height -- self-referential. Qt won't flag it as a binding
-      // loop, it just settles wrong. Column.implicitHeight is content-derived
-      // and independent of the viewport. Model.HISTORY_CAP rows need no
-      // virtualization.
-      Flickable {
-        id: panelFlick
-        anchors.top: headColumn.bottom
+      // Model.HISTORY_CAP is cycle state, not a rendering budget. Keep the
+      // grouped view, but only instantiate its newest historyRenderLimit rows.
+      // This must not be a Column: panelFlick fills the anchor-derived height,
+      // while implicitHeight comes from its content. A positioner would derive
+      // its implicit height from panelFlick.height and close the sizing loop.
+      Item {
+        id: historyScreen
+        anchors.top: screenActions.bottom
         anchors.topMargin: Style.space(14)
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        contentWidth: width
-        contentHeight: historyColumn.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        visible: root.screen === "history"
+        implicitHeight: historyColumn.implicitHeight
 
-        Column {
-          id: historyColumn
-          width: panelFlick.width
-          spacing: Style.space(14)
+        Flickable {
+          id: panelFlick
+          width: parent.width
+          height: parent.height
+          contentWidth: width
+          contentHeight: historyColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          interactive: contentHeight > height
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-          // ---- history ----------------------------------------------------
-
-          Text {
-            visible: root.historyCount === 0
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: "No sessions yet."
-            color: Qt.darker(root.contentForeground, 1.4)
-            font.family: root.contentFontFamily
-            font.pixelSize: Style.font.body
-          }
-
-          // history arrives newest-first (Model.pushSession unshifts), so no
-          // re-sort needed.
           Column {
-            id: historyRows
-            visible: root.historyCount > 0
-            width: parent.width
-            spacing: Style.space(12)
+            id: historyColumn
+            width: panelFlick.width
+            spacing: Style.space(14)
 
-            Repeater {
-              model: root.timer ? Model.groupByDay(root.timer.history, clock.date.getTime()) : []
+            // ---- history ----------------------------------------------------
 
-              delegate: Column {
-                id: dayGroup
-                required property var modelData
-                width: historyRows.width
-                spacing: Style.space(6)
+            Text {
+              visible: root.historyCount === 0
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: "No sessions yet."
+              color: Qt.darker(root.contentForeground, 1.4)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+            }
 
-                PanelSectionHeader {
-                  text: dayGroup.modelData.label + " " + root.dotGlyph + " " + dayGroup.modelData.count
-                  foreground: root.contentForeground
-                  fontFamily: root.contentFontFamily
-                }
+            Text {
+              visible: root.historyCount > root.historyRenderLimit
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: "Showing latest " + root.historyRenderLimit + " of " + root.historyCount + "."
+              color: Qt.darker(root.contentForeground, 1.4)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+            }
 
-                Repeater {
-                  model: dayGroup.modelData.sessions
+            // history arrives newest-first (Model.pushSession unshifts), so no
+            // re-sort needed.
+            Column {
+              id: historyRows
+              visible: root.historyCount > 0
+              width: parent.width
+              spacing: Style.space(12)
 
-                  delegate: Text {
-                    required property var modelData
-                    width: dayGroup.width
-                    text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
-                    color: root.contentForeground
-                    font.family: root.contentFontFamily
-                    font.pixelSize: Style.font.body
+              Repeater {
+                model: root.renderedHistoryGroups
+
+                delegate: Column {
+                  id: dayGroup
+                  required property int index
+                  required property var modelData
+                  width: historyRows.width
+                  spacing: Style.space(6)
+
+                    PanelSectionHeader {
+                        // Group bindings can refresh in either order during a Repeater rebuild.
+                        text: dayGroup.modelData.label + " " + root.dotGlyph + " " + (root.historyGroups[dayGroup.index] || dayGroup.modelData).count
+                    foreground: root.contentForeground
+                    fontFamily: root.contentFontFamily
+                  }
+
+                  Repeater {
+                    model: dayGroup.modelData.sessions
+
+                    delegate: Text {
+                      required property var modelData
+                      width: dayGroup.width
+                      text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
+                      color: root.contentForeground
+                      font.family: root.contentFontFamily
+                      font.pixelSize: Style.font.body
+                    }
                   }
                 }
               }
             }
           }
         }
+      }
+
+      Column {
+        id: settingsScreen
+        anchors.top: screenActions.bottom
+        anchors.topMargin: Style.space(14)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        visible: root.screen === "settings"
       }
     }
   }
