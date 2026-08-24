@@ -20,8 +20,8 @@ Listed on [Omarchy Plugins](https://omarchyplugins.com/plugin.html?id=io.github.
 - Omarchy with the Quattro shell (`omarchy-shell`) — this is a `bar-widget`
   plugin and uses the shell's `qs.Ui` / `qs.Commons` modules.
 - A Nerd Font as the bar font, for the hourglass, coffee, play, pause, reset,
-  plus, minus, settings, history, and skip glyphs. Omarchy's default
-  (JetBrainsMono Nerd Font) covers all ten; a bar configured with a non-Nerd
+  plus, minus, settings, history, skip, and back glyphs. Omarchy's default
+  (JetBrainsMono Nerd Font) covers all eleven; a bar configured with a non-Nerd
   font renders them as tofu.
 - `notify-send` (`libnotify`) for the completion notification, which ships with
   Omarchy. Absent, the notification is skipped silently; nothing else breaks.
@@ -94,11 +94,11 @@ key runs the same single countdown as before, with no breaks or cycle. The
 panel does look different after upgrading: the timer screen now includes the
 Timer/Pomodoro switch, and the gear button opens a settings screen.
 
-Open the widget and select the gear button. In Timer mode, Focus minutes and
-the three toggles are live; Short break, Long break, and Cycles before long
-break are disabled. In Pomodoro mode, all four number fields and all three
-toggles are live. The Timer/Pomodoro buttons are enabled only before a session
-starts. Changes are written back to `shell.json`.
+Choose Timer or Pomodoro on the timer screen, then select the gear button. In
+Timer mode, Focus minutes and the three toggles are live; Short break, Long
+break, and Cycles before long break are disabled. In Pomodoro mode, all four
+number fields and all three toggles are live. The mode switch is enabled only
+before a session starts. Changes are written back to `shell.json`.
 
 To edit the file directly instead, set the keys under the widget's entry in
 `shell.json`:
@@ -168,7 +168,7 @@ finished.
 - Click the widget to open the timer screen: mode switch, countdown flanked
   by +/- (5 minute steps, or scroll while idle), then play/pause, skip when a
   break is armed or running, and reset. The list and gear buttons open the
-  history and settings screens.
+  history and settings screens; the back arrow returns either one to the timer.
 - Timer mode runs one work interval and returns to idle. Pomodoro mode runs
   work → short break → work, with a long break after every fourth completed
   work interval that day by default. Breaks start automatically by default;

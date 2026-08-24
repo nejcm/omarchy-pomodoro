@@ -64,6 +64,7 @@ Panel {
     : timer.pomodorosToday % cycleCount
 
   property string screen: "timer"
+  onScreenChanged: keyCatcher.forceActiveFocus()
   onOpenedChanged: if (opened) screen = "timer"
 
   // Transport controls, sized as the panel's hero affordance rather than as
@@ -116,6 +117,7 @@ Panel {
   readonly property string settingsGlyph: String.fromCharCode(0xf013)
   readonly property string historyGlyph: String.fromCharCode(0xf03a)
   readonly property string skipGlyph: String.fromCharCode(0xf04e)
+  readonly property string backGlyph: String.fromCharCode(0xf060)
 
   // Wheel-step accumulator for the countdown's duration scroll.
   // Model.wheelSteps banks the sub-notch remainder so a touchpad flick can't
@@ -165,7 +167,7 @@ Panel {
     centerOnBar: false
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(screenActions.implicitHeight + Style.space(14) + (
+    contentHeight: panel.fittedContentHeight(screenActions.height + Style.space(14) + (
       root.screen === "timer" ? headColumn.implicitHeight
       : root.screen === "history" ? historyScreen.implicitHeight
       : settingsScreen.implicitHeight), Style.space(560))
@@ -208,24 +210,50 @@ Panel {
         id: screenActions
         anchors.top: parent.top
         anchors.right: parent.right
+        height: Math.max(Style.space(30), implicitHeight)
         spacing: Style.spacing.sm
 
+        ModeTabs {
+          anchors.verticalCenter: parent.verticalCenter
+          visible: root.screen === "timer"
+          width: Style.space(180)
+          value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
+          enabled: !!root.timer && !root.timer.started
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          onChanged: function (value) {
+            if (root.timer) root.timer.commitSettings({ mode: value })
+          }
+        }
+
         PanelActionButton {
+          anchors.verticalCenter: parent.verticalCenter
+          visible: root.screen !== "timer"
+          iconText: root.backGlyph
+          tooltipText: "Timer (T / Esc)"
+          foreground: root.contentForeground
+          fontFamily: root.contentFontFamily
+          onClicked: root.screen = "timer"
+        }
+
+        PanelActionButton {
+          anchors.verticalCenter: parent.verticalCenter
           iconText: root.settingsGlyph
                 tooltipText: "Settings (S)"
           foreground: root.contentForeground
           fontFamily: root.contentFontFamily
           bordered: root.screen === "settings"
-          onClicked: root.screen = root.screen === "settings" ? "timer" : "settings"
+          onClicked: root.screen = "settings"
         }
 
         PanelActionButton {
+          anchors.verticalCenter: parent.verticalCenter
           iconText: root.historyGlyph
                 tooltipText: "History (Y)"
           foreground: root.contentForeground
           fontFamily: root.contentFontFamily
           bordered: root.screen === "history"
-          onClicked: root.screen = root.screen === "history" ? "timer" : "history"
+          onClicked: root.screen = "history"
         }
       }
 
@@ -237,17 +265,6 @@ Panel {
         anchors.right: parent.right
         spacing: Style.space(14)
         visible: root.screen === "timer"
-
-        ModeTabs {
-          width: parent.width
-          value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
-          enabled: !!root.timer && !root.timer.started
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-          onChanged: function (value) {
-            if (root.timer) root.timer.commitSettings({ mode: value })
-          }
-        }
 
         Text {
           visible: root.timer && root.timer.mode === Model.MODE_POMODORO
@@ -578,22 +595,6 @@ Panel {
             width: settingsFlick.width
             spacing: Style.space(16)
 
-            ButtonGroup {
-              width: parent.width
-              options: [
-                { value: Model.MODE_TIMER, label: "Timer" },
-                { value: Model.MODE_POMODORO, label: "Pomodoro" }
-              ]
-              value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
-              enabled: !!root.timer && !root.timer.started
-              opacity: enabled ? 1 : 0.35
-              foreground: root.contentForeground
-              fontFamily: root.contentFontFamily
-              onChanged: function (value) {
-                if (root.timer) root.timer.commitSettings({ mode: value })
-              }
-            }
-
             // QQC.SpinBox replaces its value binding after an edit, so each
             // handler below restores the service-backed binding.
             // Without a timer, that deliberately reverts the unapplied edit.
@@ -611,6 +612,16 @@ Panel {
                 if (root.timer) root.timer.commitSettings({ minutes: value })
                 focusMinutesField.field.value = Qt.binding(function () { return focusMinutesField.value })
               }
+            }
+
+            Text {
+              visible: !root.timer || root.timer.mode === Model.MODE_TIMER
+              width: parent.width
+              text: "These apply in Pomodoro mode; switch on the timer screen."
+              wrapMode: Text.WordWrap
+              color: Qt.darker(root.contentForeground, 1.4)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
             }
 
             NumberField {
