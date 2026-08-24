@@ -5,8 +5,9 @@ in your Omarchy bar, not in a separate app or browser tab. An hourglass glyph
 sits idle in the bar until you click it to start a session; while running, the
 glyph is replaced by a live `mm:ss` countdown (dimmed while paused) so
 remaining time is visible at a glance without opening anything. Click again to
-open the timer screen, with the Timer/Pomodoro switch, play/pause, skip, and
-reset controls, plus history and settings screens.
+open the timer screen. Its header puts the Timer/Pomodoro tabs on the left and
+the settings and history icon buttons on the right, all on one line. History
+and settings replace the tabs with a back button at the same left edge.
 
 It's built to disappear when you're not using it: no separate process, no
 tray icon, no window to manage — just a widget in a bar you already look at.
@@ -94,11 +95,11 @@ key runs the same single countdown as before, with no breaks or cycle. The
 panel does look different after upgrading: the timer screen now includes the
 Timer/Pomodoro switch, and the gear button opens a settings screen.
 
-Choose Timer or Pomodoro on the timer screen, then select the gear button. In
-Timer mode, Focus minutes and the three toggles are live; Short break, Long
-break, and Cycles before long break are disabled. In Pomodoro mode, all four
-number fields and all three toggles are live. The mode switch is enabled only
-before a session starts. Changes are written back to `shell.json`.
+Choose Timer or Pomodoro from the left side of the timer screen header, then
+select the gear button on the right. The settings screen puts four number
+fields and three toggles in one scrollable column. Every settings control is
+editable in either mode. The mode switch is enabled only before a session
+starts. Changes are written back to `shell.json`.
 
 To edit the file directly instead, set the keys under the widget's entry in
 `shell.json`:

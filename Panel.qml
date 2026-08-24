@@ -206,54 +206,68 @@ Panel {
         root.scrollPanelRows(dy)
       }
 
-      Row {
+      Item {
         id: screenActions
         anchors.top: parent.top
+        anchors.left: parent.left
         anchors.right: parent.right
+        implicitHeight: Math.max(leftActions.implicitHeight, rightActions.implicitHeight)
         height: Math.max(Style.space(30), implicitHeight)
-        spacing: Style.spacing.sm
 
-        ModeTabs {
+        Row {
+          id: leftActions
+          anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
-          visible: root.screen === "timer"
-          width: Style.space(180)
-          value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
-          enabled: !!root.timer && !root.timer.started
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-          onChanged: function (value) {
-            if (root.timer) root.timer.commitSettings({ mode: value })
+
+          ModeTabs {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.screen === "timer"
+            width: Style.space(180)
+            value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
+            enabled: !!root.timer && !root.timer.started
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            onChanged: function (value) {
+              if (root.timer) root.timer.commitSettings({ mode: value })
+            }
+          }
+
+          PanelActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.screen !== "timer"
+            iconText: root.backGlyph
+            tooltipText: "Timer (T / Esc)"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            onClicked: root.screen = "timer"
           }
         }
 
-        PanelActionButton {
+        Row {
+          id: rightActions
+          anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          visible: root.screen !== "timer"
-          iconText: root.backGlyph
-          tooltipText: "Timer (T / Esc)"
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-          onClicked: root.screen = "timer"
-        }
+          spacing: Style.spacing.sm
 
-        PanelActionButton {
-          anchors.verticalCenter: parent.verticalCenter
-          iconText: root.settingsGlyph
-                tooltipText: "Settings (S)"
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-          bordered: root.screen === "settings"
-          onClicked: root.screen = "settings"
-        }
+          PanelActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.settingsGlyph
+            tooltipText: "Settings (S)"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            bordered: root.screen === "settings"
+            onClicked: root.screen = "settings"
+          }
 
-        PanelActionButton {
-          anchors.verticalCenter: parent.verticalCenter
-          iconText: root.historyGlyph
-                tooltipText: "History (Y)"
-          foreground: root.contentForeground
-          fontFamily: root.contentFontFamily
-          bordered: root.screen === "history"
-          onClicked: root.screen = "history"
+          PanelActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.historyGlyph
+            tooltipText: "History (Y)"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            bordered: root.screen === "history"
+            onClicked: root.screen = "history"
+          }
         }
       }
 
@@ -614,16 +628,6 @@ Panel {
               }
             }
 
-            Text {
-              visible: !root.timer || root.timer.mode === Model.MODE_TIMER
-              width: parent.width
-              text: "These apply in Pomodoro mode; switch on the timer screen."
-              wrapMode: Text.WordWrap
-              color: Qt.darker(root.contentForeground, 1.4)
-              font.family: root.contentFontFamily
-              font.pixelSize: Style.font.caption
-            }
-
             NumberField {
               id: breakMinutesField
               width: parent.width
@@ -632,8 +636,6 @@ Panel {
               to: Model.MAX_MINUTES
               value: root.timer ? root.timer.settingsSnapshot.breakMinutes : root.setting("breakMinutes", Model.DEFAULT_BREAK_MINUTES)
               field.live: false
-              enabled: !!root.timer && root.timer.mode === Model.MODE_POMODORO
-              opacity: enabled ? 1 : 0.35
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
               onModified: function (value) {
@@ -650,8 +652,6 @@ Panel {
               to: Model.MAX_MINUTES
               value: root.timer ? root.timer.settingsSnapshot.longBreakMinutes : root.setting("longBreakMinutes", Model.DEFAULT_LONG_BREAK_MINUTES)
               field.live: false
-              enabled: !!root.timer && root.timer.mode === Model.MODE_POMODORO
-              opacity: enabled ? 1 : 0.35
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
               onModified: function (value) {
@@ -668,8 +668,6 @@ Panel {
               to: Model.MAX_CYCLES
               value: root.timer ? root.timer.settingsSnapshot.cyclesBeforeLongBreak : root.setting("cyclesBeforeLongBreak", Model.DEFAULT_CYCLES)
               field.live: false
-              enabled: !!root.timer && root.timer.mode === Model.MODE_POMODORO
-              opacity: enabled ? 1 : 0.35
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
               onModified: function (value) {
