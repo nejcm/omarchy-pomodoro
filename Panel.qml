@@ -7,24 +7,38 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls as QQC
 import Quickshell
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
 // Pomodoro control panel: countdown + play/pause/reset + session history.
-// BarWidget.qml owns all timer state and persistence. This panel never copies
-// that state in -- it reads live off `hostWidget` and drives it through
-// hostWidget's own start()/pause()/reset()/toggleRunning(), because
-// injectPanel re-fires only on bar/settings changes, not every tick, so any
-// local copy would go stale within a second.
+// Service.qml owns all timer state and the session-history file (the one
+// other write, saving an idle duration nudge back to the widget's shell.json
+// entry, is BarWidget.qml's). This panel never copies
+// that state in -- it reads live off `timer` and drives it through the
+// service's own start()/pause()/reset()/toggleRunning(), because injectPanel
+// re-fires only on bar/settings/timer changes, not every tick, so any local
+// copy would go stale within a second.
 Panel {
   id: root
   moduleName: "io.github.nejcm.pomodoro"
 
-  // Injected by BarWidget.qml's injectPanel() on bar/settings changes.
+  // Injected by BarWidget.qml's injectPanel().
   property var anchorItem: null
+
+  // Two references, deliberately not one. `hostWidget` is the bar-widget root
+  // that owns this panel -- an identity, one per monitor, used only for popout
+  // routing and anchoring. `timer` is the single Service.qml instance shared
+  // by every monitor, and is where all state and every transition lives.
   property var hostWidget: null
+
+  // Null until the service mounts (and null again if `_syncServices` tears it
+  // down), exactly like hostWidget is null before injection -- so every read
+  // below stays guarded. BarWidget re-injects on change, so this never holds a
+  // destroyed instance.
+  property var timer: null
 
   // Bar.findPanelWidget / switchPanelFrom key off the bar-widget root
   // (BarWidget.qml's `root`), not this nested panel. So route switchPanel
@@ -32,12 +46,26 @@ Panel {
   // would pass this nested panel as the owner. Same fix the clock plugin uses.
   readonly property var barIdentity: hostWidget || root
 
-  // hostWidget is injected in Loader.onLoaded, which fires after these
-  // bindings first evaluate -- hence the null guard. Hoisted here so the
-  // history views below read as plain state instead of each repeating the
-  // guard, and so the empty/non-empty pair below is visibly one predicate
-  // and its negation.
-  readonly property int historyCount: hostWidget ? hostWidget.history.length : 0
+  // timer is injected in Loader.onLoaded (and again whenever the service
+  // mounts), which fires after these bindings first evaluate -- hence the null
+  // guard. Hoisted here so the history views below read as plain state instead
+  // of each repeating the guard, and so the empty/non-empty pair below is
+  // visibly one predicate and its negation.
+  readonly property int historyCount: timer ? timer.history.length : 0
+  readonly property int historyRenderLimit: 200
+  readonly property var renderedHistory: timer ? timer.history.slice(0, historyRenderLimit) : []
+    readonly property var historyGroups: root.screen === "history"
+        ? Model.groupByDay(timer ? timer.history : [], clock.date.getTime())
+        : []
+  readonly property var renderedHistoryGroups: Model.groupByDay(renderedHistory, clock.date.getTime())
+  readonly property int cycleCount: timer ? timer.settingsSnapshot.cyclesBeforeLongBreak : Model.DEFAULT_CYCLES
+  readonly property int completedCycleCount: !timer ? 0
+    : timer.phase === Model.PHASE_LONG ? cycleCount
+    : timer.pomodorosToday % cycleCount
+
+  property string screen: "timer"
+  onScreenChanged: keyCatcher.forceActiveFocus()
+  onOpenedChanged: if (opened) screen = "timer"
 
   // Transport controls, sized as the panel's hero affordance rather than as
   // incidental icons. The default `Style.font.icon` (= title, 14) reads as a
@@ -84,6 +112,12 @@ Panel {
   readonly property string plusGlyph: String.fromCharCode(0xf067)
   readonly property string minusGlyph: String.fromCharCode(0xf068)
   readonly property string dotGlyph: String.fromCharCode(0xb7)
+  readonly property string filledDotGlyph: String.fromCharCode(0x25cf)
+  readonly property string hollowDotGlyph: String.fromCharCode(0x25cb)
+  readonly property string settingsGlyph: String.fromCharCode(0xf013)
+  readonly property string historyGlyph: String.fromCharCode(0xf03a)
+  readonly property string skipGlyph: String.fromCharCode(0xf04e)
+  readonly property string backGlyph: String.fromCharCode(0xf060)
 
   // Wheel-step accumulator for the countdown's duration scroll.
   // Model.wheelSteps banks the sub-notch remainder so a touchpad flick can't
@@ -91,6 +125,25 @@ Panel {
   // singleton: it is a dozen lines of arithmetic, it is covered by
   // Model.test.js, and it cannot break when the host shell moves a helper.
   property real wheelAccumulator: 0
+
+  // Duration scrolling is idle-only. adjustMinutes() carries its own guard,
+  // but a touchpad brush is easy to trigger by accident and silently
+  // reshaping a live countdown is worse than requiring a button press. The
+  // accumulator clears on the transition so a remainder banked while idle
+  // cannot survive a session and fire an early step afterwards.
+  readonly property bool wheelAdjusts: !!timer && timer.idle
+  onWheelAdjustsChanged: wheelAccumulator = 0
+
+  // Clamped scroll of the active Flickable, in text-row steps. The keyboard
+  // cursor is the only caller: the wheel reaches either Flickable on its own,
+  // Up/Down/j/k cannot.
+  function scrollPanelRows(rows) {
+    var flick = root.screen === "history" ? panelFlick
+              : root.screen === "settings" ? settingsFlick : null
+    if (!flick) return
+    var max = Math.max(0, flick.contentHeight - flick.height)
+    flick.contentY = Math.max(0, Math.min(flick.contentY + rows * Style.space(56), max))
+  }
 
   // Rolls the TODAY/YESTERDAY group labels over at midnight without needing
   // the panel closed and reopened -- same fix clock/Panel.qml uses for its
@@ -107,22 +160,136 @@ Panel {
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
-    centerOnBar: true
+    // Under the bar icon that opened it, not centred on the screen. The panel
+    // is a control surface for one widget, so it should read as belonging to
+    // that widget; KeyboardPanel's default already centres the card on the
+    // anchor and clamps it to the screen edge.
+    centerOnBar: false
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(320))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    contentHeight: panel.fittedContentHeight(screenActions.height + Style.space(14) + (
+      root.screen === "timer" ? headColumn.implicitHeight
+      : root.screen === "history" ? historyScreen.implicitHeight
+      : settingsScreen.implicitHeight), Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
-      onActivateRequested: if (root.hostWidget) root.hostWidget.toggleRunning()
+      blocked: root.screen === "settings" && (
+        focusMinutesField.field.activeFocus
+        || breakMinutesField.field.activeFocus
+        || longBreakMinutesField.field.activeFocus
+        || cyclesField.field.activeFocus)
+      onCloseRequested: {
+        if (root.screen === "timer") root.close()
+        else root.screen = "timer"
+      }
+      onActivateRequested: {
+        if (root.screen === "timer" && root.timer) root.timer.toggleRunning()
+      }
       onTabRequested: function (direction) { root.switchPanel(direction) }
+      onTextKey: function (text) {
+        text = text.toLowerCase()
+        if (text === "t") root.screen = "timer"
+        else if (text === "y") root.screen = "history"
+        else if (text === "s") root.screen = "settings"
+      }
+      // Left/Right/h/l selects Timer or Pomodoro directly; Up/Down/j/k
+      // scrolls the active history/settings view by one text-row step.
+      onMoveRequested: function (dx, dy) {
+        if (dx !== 0) {
+          if (root.screen === "timer" && root.timer && !root.timer.started)
+            root.timer.commitSettings({ mode: dx < 0 ? Model.MODE_TIMER : Model.MODE_POMODORO })
+          return
+        }
+        if (dy === 0) return
+        root.scrollPanelRows(dy)
+      }
+
+      Item {
+        id: screenActions
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        implicitHeight: Math.max(leftActions.implicitHeight, rightActions.implicitHeight)
+        height: Math.max(Style.space(30), implicitHeight)
+
+        Row {
+          id: leftActions
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+
+          ModeTabs {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.screen === "timer"
+            width: Style.space(180)
+            value: root.timer ? root.timer.mode : root.setting("mode", Model.MODE_TIMER)
+            enabled: !!root.timer && !root.timer.started
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            onChanged: function (value) {
+              if (root.timer) root.timer.commitSettings({ mode: value })
+            }
+          }
+
+          PanelActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.screen !== "timer"
+            iconText: root.backGlyph
+            tooltipText: "Timer (T / Esc)"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            onClicked: root.screen = "timer"
+          }
+        }
+
+        Row {
+          id: rightActions
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.spacing.sm
+
+          PanelActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.settingsGlyph
+            tooltipText: "Settings (S)"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            bordered: root.screen === "settings"
+            onClicked: root.screen = "settings"
+          }
+
+          PanelActionButton {
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: root.historyGlyph
+            tooltipText: "History (Y)"
+            foreground: root.contentForeground
+            fontFamily: root.contentFontFamily
+            bordered: root.screen === "history"
+            onClicked: root.screen = "history"
+          }
+        }
+      }
 
       Column {
-        id: column
-        anchors.fill: parent
+        id: headColumn
+        anchors.top: screenActions.bottom
+        anchors.topMargin: Style.space(14)
+        anchors.left: parent.left
+        anchors.right: parent.right
         spacing: Style.space(14)
+        visible: root.screen === "timer"
+
+        Text {
+          visible: root.timer && root.timer.mode === Model.MODE_POMODORO
+          width: parent.width
+          text: root.timer ? Model.phaseLabel(root.timer.phase) : ""
+          horizontalAlignment: Text.AlignHCenter
+          color: root.contentForeground
+          font.family: root.contentFontFamily
+          font.pixelSize: Style.font.body
+          font.bold: true
+        }
 
         // ---- countdown, dimmed when paused; +/- adjust the duration ----
         // Wrapped in an Item, not bare in the Column, same reason as the
@@ -148,15 +315,15 @@ Panel {
               fontSize: root.adjustGlyphSize
               size: root.adjustHitSize
               fontFamily: root.contentFontFamily
-              enabled: !!root.hostWidget && root.hostWidget.canAdjust(-5)
-              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(-5)
+              enabled: !!root.timer && root.timer.canAdjust(-5)
+              onClicked: if (root.timer) root.timer.adjustMinutes(-5)
             }
 
             Text {
               anchors.verticalCenter: parent.verticalCenter
-              text: root.hostWidget ? Model.mmss(root.hostWidget.remainingSeconds) : "00:00"
+              text: root.timer ? Model.mmss(root.timer.remainingSeconds) : "00:00"
               color: root.contentForeground
-              opacity: root.hostWidget && root.hostWidget.paused ? 0.6 : 1.0
+              opacity: root.timer && root.timer.paused ? 0.6 : 1.0
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.display
               font.bold: true
@@ -170,29 +337,92 @@ Panel {
               fontSize: root.adjustGlyphSize
               size: root.adjustHitSize
               fontFamily: root.contentFontFamily
-              enabled: !!root.hostWidget && root.hostWidget.canAdjust(5)
-              onClicked: if (root.hostWidget) root.hostWidget.adjustMinutes(5)
+              enabled: !!root.timer && root.timer.canAdjust(5)
+              onClicked: if (root.timer) root.timer.adjustMinutes(5)
             }
           }
 
-          // angleDelta.y === 0 guard: a horizontal/touchpad side-scroll
-          // reports only x, and must not bank a step.
+          // Wheel shield.
           //
-          // Deliberately idle-only. adjustMinutes() would be safe while a
-          // session runs -- it carries its own guard -- but a scroll is easy
-          // to trigger by accident on a touchpad, and silently reshaping a
-          // live countdown is worse than requiring a button press. The
-          // accumulator resets with `enabled` so a banked remainder can't
-          // survive a session and fire an early step later.
-          WheelHandler {
-            enabled: !!root.hostWidget && root.hostWidget.idle
-            onEnabledChanged: root.wheelAccumulator = 0
-            onWheel: function (event) {
-              if (event.angleDelta.y === 0) return
-              var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
-              root.wheelAccumulator = wheel.remainder
-              if (wheel.steps === 0) return
-              if (root.hostWidget) root.hostWidget.adjustMinutes(wheel.steps * 5)
+          // PanelActionButton's own MouseArea (Ui/PanelActionButton.qml:81-92)
+          // declares no onWheel, and a MouseArea without one still consumes
+          // the wheel -- which is precisely why Ui/WidgetButton.qml:116 has
+          // to forward it by hand. Those MouseAreas are descendants of this
+          // wrapper, so they are hit before any handler on the wrapper
+          // itself: resting the pointer on +/-, the natural place to aim
+          // before nudging, killed the notch outright. It read as random
+          // rather than broken, because a disabled MouseArea drops out of
+          // the hit test -- at 180 the greyed-out + let the wheel through
+          // while - still ate it.
+          //
+          // A later sibling of countdownRow is hit first, so the event lands
+          // here instead, across the whole row. This Item carries no
+          // MouseArea and no hover handler, so clicks, tooltips and the
+          // disabled states still belong to the buttons underneath.
+          Item {
+            anchors.fill: parent
+
+            WheelHandler {
+              // QQuickWheelEvent.accepted defaults to TRUE, so a bare
+              // `return` still swallows the event. Every path below sets
+              // acceptance explicitly rather than leaning on the default.
+              onWheel: function (event) {
+                // Belt and braces, and kept deliberately. WheelHandler
+                // filters by `orientation`, which defaults to Qt.Vertical,
+                // so a pure side-scroll should never reach this function at
+                // all -- but that is a default this file neither sets nor
+                // controls, and the guard is two lines. Declining is the
+                // honest answer to an event that is not ours; nothing behind
+                // this row wants it either.
+                if (event.angleDelta.y === 0) {
+                  event.accepted = false
+                  return
+                }
+                event.accepted = true
+
+                var direction = event.angleDelta.y > 0 ? 5 : -5
+                if (root.wheelAdjusts && root.timer.canAdjust(direction)) {
+                  // steps === 0 means the notch banked a sub-notch
+                  // remainder -- real work, and the reason one flick cannot
+                  // dump twenty minutes at once.
+                  var wheel = Model.wheelSteps(root.wheelAccumulator, event.angleDelta.y)
+                  root.wheelAccumulator = wheel.remainder
+                  if (wheel.steps !== 0) root.timer.adjustMinutes(wheel.steps * 5)
+                  return
+                }
+
+                // Running, or clamped at 1/180: nothing here for the notch
+                // to do, and it stops here rather than travelling on. The
+                // history scrolls when the pointer is over the history, not
+                // when it is over the countdown. The banked remainder goes
+                // with it, or an adjustment that is no longer happening
+                // would fire late.
+                root.wheelAccumulator = 0
+              }
+            }
+          }
+        }
+
+        Item {
+          width: parent.width
+          height: cycleDots.height
+          visible: root.timer && root.timer.mode === Model.MODE_POMODORO
+
+          Row {
+            id: cycleDots
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: Style.spacing.sm
+
+            Repeater {
+              model: root.cycleCount
+
+              delegate: Text {
+                required property int index
+                text: index < root.completedCycleCount ? root.filledDotGlyph : root.hollowDotGlyph
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
             }
           }
         }
@@ -200,8 +430,9 @@ Panel {
         // ---- play/pause + reset ---------------------------------------
         // Wrapped in an Item, not bare in the Column: a Row anchored to
         // horizontalCenter feeds back into Column.implicitWidth. Harmless
-        // here since the Column anchors.fill's, but qmllint flags it, and
-        // clock/Panel.qml's hero row avoids it the same way.
+        // here since headColumn takes its width from its anchors, but
+        // the linter flags it, and clock/Panel.qml's hero row avoids it the
+        // same way.
         Item {
           width: parent.width
           height: controlsRow.height
@@ -212,13 +443,25 @@ Panel {
             spacing: Style.space(18)
 
             PanelActionButton {
-              iconText: root.hostWidget && root.hostWidget.running ? root.pauseGlyph : root.playGlyph
-              tooltipText: root.hostWidget && root.hostWidget.running ? "Pause" : "Start"
+              iconText: root.timer && root.timer.running ? root.pauseGlyph : root.playGlyph
+              tooltipText: root.timer && root.timer.running ? "Pause" : "Start"
               foreground: root.contentForeground
               fontFamily: root.contentFontFamily
               fontSize: root.controlGlyphSize
               size: root.controlHitSize
-              onClicked: if (root.hostWidget) root.hostWidget.toggleRunning()
+              onClicked: if (root.timer) root.timer.toggleRunning()
+            }
+
+            PanelActionButton {
+              visible: root.timer && (root.timer.phase === Model.PHASE_SHORT
+                                      || root.timer.phase === Model.PHASE_LONG)
+              iconText: root.skipGlyph
+              tooltipText: "Skip break"
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              fontSize: root.controlGlyphSize
+              size: root.controlHitSize
+              onClicked: if (root.timer) root.timer.skipBreak()
             }
 
             PanelActionButton {
@@ -229,81 +472,273 @@ Panel {
               fontFamily: root.contentFontFamily
               fontSize: root.controlGlyphSize
               size: root.controlHitSize
-              enabled: !!root.hostWidget && root.hostWidget.started
-              onClicked: if (root.hostWidget) root.hostWidget.reset()
+              enabled: !!root.timer && root.timer.started
+              onClicked: if (root.timer) root.timer.reset()
             }
           }
         }
+      }
 
-        PanelSeparator {
-          foreground: root.contentForeground
-        }
+      // Model.HISTORY_CAP is cycle state, not a rendering budget. Keep the
+      // grouped view, but only instantiate its newest historyRenderLimit rows.
+      // This must not be a Column: panelFlick fills the anchor-derived height,
+      // while implicitHeight comes from its content. A positioner would derive
+      // its implicit height from panelFlick.height and close the sizing loop.
+      Item {
+        id: historyScreen
+        anchors.top: screenActions.bottom
+        anchors.topMargin: Style.space(14)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: root.screen === "history"
+        implicitHeight: historyColumn.implicitHeight
 
-        // ---- history ----------------------------------------------------
-
-        Text {
-          visible: root.historyCount === 0
-          width: parent.width
-          horizontalAlignment: Text.AlignHCenter
-          text: "No sessions yet."
-          color: Qt.darker(root.contentForeground, 1.4)
-          font.family: root.contentFontFamily
-          font.pixelSize: Style.font.body
-        }
-
-        // Height-capped so the rows scroll instead of growing the panel
-        // off-screen. history arrives newest-first (Model.pushSession
-        // unshifts), so no re-sort needed.
-        //
-        // Flickable + Column, not ListView: ListView.contentHeight derives
-        // from the delegates it instantiates, and it instantiates delegates
-        // to fill its own height -- self-referential. Qt won't flag it as a
-        // binding loop, it just settles wrong (a sliver, or growing a row a
-        // frame). Column.implicitHeight is content-derived and independent
-        // of the viewport, so the cap works. Model.HISTORY_CAP rows need no
-        // virtualization. Matches clock/Panel.qml's calendarScroll.
         Flickable {
-          visible: root.historyCount > 0
+          id: panelFlick
           width: parent.width
-          height: Math.min(historyRows.implicitHeight, Style.space(220))
+          height: parent.height
           contentWidth: width
-          contentHeight: historyRows.implicitHeight
+          contentHeight: historyColumn.implicitHeight
           clip: true
           boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
           interactive: contentHeight > height
+          QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
 
           Column {
-            id: historyRows
-            width: parent.width
-            spacing: Style.space(12)
+            id: historyColumn
+            width: panelFlick.width
+            spacing: Style.space(14)
 
-            Repeater {
-              model: root.hostWidget ? Model.groupByDay(root.hostWidget.history, clock.date.getTime()) : []
+            // ---- history ----------------------------------------------------
 
-              delegate: Column {
-                id: dayGroup
-                required property var modelData
-                width: historyRows.width
-                spacing: Style.space(6)
+            Text {
+              visible: root.historyCount === 0
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: "No sessions yet."
+              color: Qt.darker(root.contentForeground, 1.4)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+            }
 
-                PanelSectionHeader {
-                  text: dayGroup.modelData.label + " " + root.dotGlyph + " " + dayGroup.modelData.count
-                  foreground: root.contentForeground
-                  fontFamily: root.contentFontFamily
-                }
+            Text {
+              visible: root.historyCount > root.historyRenderLimit
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: "Showing latest " + root.historyRenderLimit + " of " + root.historyCount + "."
+              color: Qt.darker(root.contentForeground, 1.4)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.body
+            }
 
-                Repeater {
-                  model: dayGroup.modelData.sessions
+            // history arrives newest-first (Model.pushSession unshifts), so no
+            // re-sort needed.
+            Column {
+              id: historyRows
+              visible: root.historyCount > 0
+              width: parent.width
+              spacing: Style.space(12)
 
-                  delegate: Text {
-                    required property var modelData
-                    width: dayGroup.width
-                    text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
-                    color: root.contentForeground
-                    font.family: root.contentFontFamily
-                    font.pixelSize: Style.font.body
+              Repeater {
+                model: root.renderedHistoryGroups
+
+                delegate: Column {
+                  id: dayGroup
+                  required property int index
+                  required property var modelData
+                  width: historyRows.width
+                  spacing: Style.space(6)
+
+                    PanelSectionHeader {
+                        // Group bindings can refresh in either order during a Repeater rebuild.
+                        text: dayGroup.modelData.label + " " + root.dotGlyph + " " + (root.historyGroups[dayGroup.index] || dayGroup.modelData).count
+                    foreground: root.contentForeground
+                    fontFamily: root.contentFontFamily
+                  }
+
+                  Repeater {
+                    model: dayGroup.modelData.sessions
+
+                    delegate: Text {
+                      required property var modelData
+                      width: dayGroup.width
+                      text: Qt.formatDateTime(new Date(modelData.startedAt), "HH:mm") + " " + root.dotGlyph + " " + modelData.minutes + " min"
+                      color: root.contentForeground
+                      font.family: root.contentFontFamily
+                      font.pixelSize: Style.font.body
+                    }
                   }
                 }
+              }
+            }
+          }
+        }
+      }
+
+      // Like historyScreen, this is an Item rather than a Column: the
+      // Flickable fills an anchor-derived height while its content owns the
+      // implicit height used to fit the panel. Making the outer item a
+      // positioner would close that sizing path back onto itself.
+      Item {
+        id: settingsScreen
+        anchors.top: screenActions.bottom
+        anchors.topMargin: Style.space(14)
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: root.screen === "settings"
+        implicitHeight: settingsColumn.implicitHeight
+        Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+
+        Flickable {
+          id: settingsFlick
+          width: parent.width
+          height: parent.height
+          contentWidth: width
+          contentHeight: settingsColumn.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          flickableDirection: Flickable.VerticalFlick
+          interactive: contentHeight > height
+          QQC.ScrollBar.vertical: QQC.ScrollBar { policy: QQC.ScrollBar.AsNeeded }
+
+          Column {
+            id: settingsColumn
+            width: settingsFlick.width
+            spacing: Style.space(16)
+
+            // QQC.SpinBox replaces its value binding after an edit, so each
+            // handler below restores the service-backed binding.
+            // Without a timer, that deliberately reverts the unapplied edit.
+            NumberField {
+              id: focusMinutesField
+              width: parent.width
+              label: "Focus minutes"
+              from: Model.MIN_MINUTES
+              to: Model.MAX_MINUTES
+              value: root.timer ? root.timer.settingsSnapshot.minutes : root.setting("minutes", Model.DEFAULT_MINUTES)
+              field.live: false
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ minutes: value })
+                focusMinutesField.field.value = Qt.binding(function () { return focusMinutesField.value })
+              }
+            }
+
+            NumberField {
+              id: breakMinutesField
+              width: parent.width
+              label: "Short break"
+              from: Model.MIN_MINUTES
+              to: Model.MAX_MINUTES
+              value: root.timer ? root.timer.settingsSnapshot.breakMinutes : root.setting("breakMinutes", Model.DEFAULT_BREAK_MINUTES)
+              field.live: false
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ breakMinutes: value })
+                breakMinutesField.field.value = Qt.binding(function () { return breakMinutesField.value })
+              }
+            }
+
+            NumberField {
+              id: longBreakMinutesField
+              width: parent.width
+              label: "Long break"
+              from: Model.MIN_MINUTES
+              to: Model.MAX_MINUTES
+              value: root.timer ? root.timer.settingsSnapshot.longBreakMinutes : root.setting("longBreakMinutes", Model.DEFAULT_LONG_BREAK_MINUTES)
+              field.live: false
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ longBreakMinutes: value })
+                longBreakMinutesField.field.value = Qt.binding(function () { return longBreakMinutesField.value })
+              }
+            }
+
+            NumberField {
+              id: cyclesField
+              width: parent.width
+              label: "Cycles before long break"
+              from: Model.MIN_CYCLES
+              to: Model.MAX_CYCLES
+              value: root.timer ? root.timer.settingsSnapshot.cyclesBeforeLongBreak : root.setting("cyclesBeforeLongBreak", Model.DEFAULT_CYCLES)
+              field.live: false
+              foreground: root.contentForeground
+              fontFamily: root.contentFontFamily
+              onModified: function (value) {
+                if (root.timer) root.timer.commitSettings({ cyclesBeforeLongBreak: value })
+                cyclesField.field.value = Qt.binding(function () { return cyclesField.value })
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - autoStartBreaksSwitch.implicitWidth - parent.spacing
+                text: "Auto-start breaks"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                id: autoStartBreaksSwitch
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.timer ? root.timer.settingsSnapshot.autoStartBreaks === true : root.setting("autoStartBreaks", true) === true
+                foreground: root.contentForeground
+                onToggled: if (root.timer) root.timer.commitSettings({ autoStartBreaks: !autoStartBreaksSwitch.checked })
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - autoStartWorkSwitch.implicitWidth - parent.spacing
+                text: "Auto-start work"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                id: autoStartWorkSwitch
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.timer ? root.timer.settingsSnapshot.autoStartWork === true : root.setting("autoStartWork", false) === true
+                foreground: root.contentForeground
+                onToggled: if (root.timer) root.timer.commitSettings({ autoStartWork: !autoStartWorkSwitch.checked })
+              }
+            }
+
+            Row {
+              width: parent.width
+              spacing: Style.spacing.md
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - notifySwitch.implicitWidth - parent.spacing
+                text: "Notify on completion"
+                color: root.contentForeground
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              ToggleSwitch {
+                id: notifySwitch
+                anchors.verticalCenter: parent.verticalCenter
+                checked: root.timer ? root.timer.settingsSnapshot.notify === true : root.setting("notify", true) === true
+                foreground: root.contentForeground
+                onToggled: if (root.timer) root.timer.commitSettings({ notify: !notifySwitch.checked })
               }
             }
           }

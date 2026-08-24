@@ -1,16 +1,29 @@
 import QtQuick
-import Quickshell
-import Quickshell.Io
 import qs.Ui
 import "Model.js" as Model
 
-// Pomodoro bar widget. Mirrors shell/plugins/panels/clock/BarWidget.qml:
-// state + persistence + panel-routing contract live on this root; Panel.qml
-// is loaded via panelLoader and reads/drives everything through
-// `hostWidget`.
+// Pomodoro bar widget -- a *view* onto Service.qml.
+//
+// Instantiated once per rendered module slot: zero or more per screen, never
+// a count this file may assume. Zero is real -- a plugin enabled only at the
+// top level has a service and no bar widget at all -- and so is more than one,
+// since nothing stops a layout from listing the same id twice
+// (Bar.qml:1493-1518 repeats a slot per entry).
+//
+// It therefore owns no timer state: the countdown, the completion
+// notification and the session-history file all live on the single service
+// instance reached through `timer` below.
+//
+// It does own one write, though: persistSettings() saves settled setting
+// changes back to this widget's shell.json entry. That cannot live on
+// the service -- the shell injects `bar` and `settings` here and neither one
+// there -- so the service says *when* and *who*, and this file does it.
+//
+// Everything else here is genuinely per-surface: the button, the panel
+// loader, and the open/close contract Bar.qml's popout coordinator looks for
+// on the bar-widget root (see the panel routing section).
 BarWidget {
     id: root
-    moduleName: "io.github.nejcm.pomodoro"
 
     // Idle glyph: nf-fa-hourglass_half (U+F252). Classic Font Awesome
     // (U+F0xx-U+F2xx), the one Nerd Fonts range v3 kept intact -- unlike the
@@ -21,247 +34,208 @@ BarWidget {
     // rule; that block carries the codepoint-range rationale for all four.
     readonly property string idleGlyph: String.fromCharCode(0xf252)
 
-    // --- settings, section 5 -----------------------------------------------
-    // Trust boundary: shell.json is hand-edited, so validate through Model.
-    property int durationMinutes: Model.validMinutesOr(setting("minutes", Model.DEFAULT_MINUTES), Model.DEFAULT_MINUTES)
-    readonly property bool notifyEnabled: setting("notify", true) === true
+    // --- the shared timer --------------------------------------------------
+    // `_services` is a property on shell.qml, so this binding is live: it
+    // flips from null to the instance the moment the service mounts, and back
+    // to null if `_syncServices` tears it down. Guarded on the function's
+    // existence so an older host shell without the service API degrades to a
+    // visibly dead widget (idle glyph, inert panel) plus the warning below,
+    // instead of throwing on every binding evaluation.
+    // Keyed by `moduleName`, never by a hardcoded id. The bar could only have
+    // rendered this widget by resolving its registry entry, which is stored
+    // under `String(manifest.id)` (shell.qml:678) and looked up by
+    // `canonicalWidgetId(moduleName)` (Bar.qml:1536-1539) -- and that function
+    // is the identity (Commons/Util.qml:61-63). So a rendered widget's
+    // moduleName *is* the manifest id, which is the same key `_services` uses
+    // (shell.qml:275-277). A constant would only match the unrenamed original:
+    // copy this folder, change `id` in manifest.json, enable it, and the
+    // service mounts under the new id while the lookup asks for the old one --
+    // a permanently dead hourglass with nothing logged, since serviceFor()
+    // exists and simply answers null. moduleName is strictly the safer key,
+    // and it is already what persistSettings() writes against.
+    readonly property var timer: bar && bar.shell && moduleName !== ""
+                                 && typeof bar.shell.serviceFor === "function"
+                                 ? bar.shell.serviceFor(moduleName) : null
 
-    // --- state, section 4 ----------------------------------------------
-    property bool running: false
-    property bool started: false
-    property var history: []
-    // Epoch milliseconds (~1.77e12 today) overflows QML's 32-bit int
-    // (max ~2.15e9) — must be double, not int. Same for endsAt and nowMs.
-    property double sessionStartedAt: 0
-    // Duration in effect for the in-progress session, snapshotted at start()
-    // so a mid-session durationMinutes edit can't retroactively relabel the
-    // history row or notification for a session that already ran at the old
-    // duration (plan section 4: duration changes apply "on the next session").
-    property int sessionMinutes: 0
-
-    // The countdown is derived from a wall-clock deadline, never decremented.
-    // A Timer that misses intervals (suspend, event-loop starvation) fires
-    // once on resume instead of catching up, so a counter would silently keep
-    // the time that elapsed while it wasn't running; recomputing against
-    // Date.now() cannot drift. The idle branch tracks durationMinutes live;
-    // a mid-session shell.json edit still can't reach an in-flight session,
-    // because that session reads endsAt/sessionMinutes instead. The one
-    // deliberate write to a started session is adjustMinutes() below.
-    property double endsAt: 0       // epoch ms; meaningful while running
-    // Banked remainder as of the last pause(), in *milliseconds*. Whole
-    // seconds would have to round, and the only rounding consistent with the
-    // display is Math.ceil -- which hands back up to a second of extra time on
-    // every pause/resume cycle, an error that accumulates rather than washing
-    // out. Keeping the raw remainder makes resume exact and leaves rounding
-    // where it belongs: in the display binding below.
-    property double pausedMs: 0
-    property double nowMs: 0        // advanced by the ticker
-
-    readonly property int remainingSeconds: running ? Math.max(0, Math.ceil((endsAt - nowMs) / 1000))
-                                                    : (started ? Math.max(0, Math.ceil(pausedMs / 1000))
-                                                               : durationMinutes * 60)
-
-    readonly property bool idle: !started
-    readonly property bool paused: started && !running
-    readonly property string barText: idle ? idleGlyph : Model.mmss(remainingSeconds)
-
-    // --- transitions, section 4 table --------------------------------------
-    function start() {
-        if (running) return
-        var ms = started ? pausedMs : durationMinutes * 60 * 1000
-        if (!started) {
-            started = true
-            sessionStartedAt = Date.now()
-            sessionMinutes = durationMinutes
-        }
-        nowMs = Date.now()
-        endsAt = nowMs + ms
-        running = true
+    // Mounting the service is the host's job alone -- deliberately, and this
+    // widget must not "help".
+    //
+    // shell.qml's ensureService() (line 283) is only idempotent once the
+    // instance is recorded, and its Component.Loading branch (line 315) hooks
+    // finalize() to statusChanged and returns *without* reserving the key. A
+    // second caller inside that window therefore passes the
+    // `if (_services[key]) return` guard, builds a second component and a
+    // second instance; both are parented to serviceHost, and lines 312-313
+    // record only the last. The orphan keeps its ticker and its FileView on
+    // pomodoro.json -- precisely the several-timers-one-history-file bug this
+    // plugin split a service out to kill. Calling from every bar surface
+    // multiplied the callers by surface count, making the widget the largest
+    // contributor to a race it cannot fix host-side.
+    //
+    // Nothing is lost by staying out of it. Every path that can produce this
+    // widget also drives _syncServices(): shell.qml's own Component.onCompleted
+    // (line 155), `onPluginsChanged` (line 358), and `onScanFinished`
+    // (line 767, synchronizing at 775) -- and onShellConfigChanged re-emits
+    // pluginsChanged (line 69), so the very config change that puts the entry
+    // on the bar mounts the service in the same turn. Until it lands, `timer`
+    // is null, which is the state the next comment block describes and the
+    // widget already renders honestly.
+    function warnIfNoServiceApi() {
+        if (!bar || !bar.shell) return
+        if (typeof bar.shell.serviceFor === "function") return
+        // Otherwise the widget is a permanently dead hourglass with no
+        // explanation anywhere.
+        console.warn("pomodoro: host shell has no serviceFor();",
+                     "the timer cannot start. Update omarchy-shell.")
     }
 
-    function pause() {
-        if (!running) return
-        // Refresh nowMs before banking the remainder: pausing before the
-        // first tick after a resume would otherwise store a stale value.
-        nowMs = Date.now()
-        // The deadline can already have passed: remainingSeconds reaches 0 the
-        // moment Date.now() > endsAt, but complete() only runs on the next
-        // tick, and ticks land late. Pausing inside that gap used to bank a
-        // zero remainder and stop the ticker, stranding the widget on a dimmed
-        // 00:00 forever -- no notification, no history row, and a reset from
-        // there would discard a session that had in fact finished. Finish it
-        // instead; a session past its deadline is complete, not pausable.
-        if (endsAt - nowMs <= 0) {
-            complete()
+    // The shell injects omarchyPath/shell/manifest/... into a service, but not
+    // `settings` -- those live on the bar *entry*, which only this widget can
+    // see. So resolve them here (setting() applies the shell.json fallbacks)
+    // and hand the service already-resolved values; it still re-validates
+    // `minutes` through Model, because shell.json is hand-edited.
+    //
+    // Called from onTimerChanged as well as onSettingsChanged, so the mount
+    // order does not matter. That means N monitors push N times, and a `var`
+    // property re-assignment can re-fire onTimerChanged with an unchanged
+    // instance -- applySettings is idempotent for exactly this reason.
+    function pushSettings() {
+        // Bar.qml's injectProps() assigns `bar` before `settings`, so a push
+        // driven by the bar arriving (or by the service mounting in that same
+        // window) would hand over setting()'s *fallbacks* rather than the
+        // entry. Harmless on the first monitor, not on a second one attached
+        // later: the fallback would differ from a duration the user had
+        // nudged, and applySettings would take it as a real config change and
+        // stomp the nudge. So wait for the entry.
+        if (!settingsReceived) return
+        if (!timer || typeof timer.applySettings !== "function") return
+        timer.applySettings({
+            minutes: setting("minutes", Model.DEFAULT_MINUTES),
+            breakMinutes: setting("breakMinutes", Model.DEFAULT_BREAK_MINUTES),
+            longBreakMinutes: setting("longBreakMinutes", Model.DEFAULT_LONG_BREAK_MINUTES),
+            cyclesBeforeLongBreak: setting("cyclesBeforeLongBreak", Model.DEFAULT_CYCLES),
+            mode: setting("mode", Model.MODE_TIMER),
+            autoStartBreaks: setting("autoStartBreaks", true) === true,
+            autoStartWork: setting("autoStartWork", false) === true,
+            notify: setting("notify", true) === true
+        })
+    }
+
+    // Writes settled setting changes back to this widget's shell.json entry,
+    // so they survive a restart instead of being discarded. Reached only
+    // through the service's debounce timer, and only by the writer it elected
+    // -- once per gesture, once per timer, not once per monitor.
+    function persistSettings(patch) {
+        if (!settingsReceived) return
+        if (!bar || !bar.shell || typeof bar.shell.updateEntryInline !== "function") return
+        if (!timer || typeof timer.claimSettingsWriter !== "function") return
+        if (!timer.claimSettingsWriter(root)) return
+
+        // Exactly one writable entry, or nothing is written.
+        //
+        // The write needs a single unambiguous target and the config loader
+        // guarantees neither half of that: `allowMultiple` reaches only the
+        // widget registry (shell.qml:693) and canonicalWidgetId is the
+        // identity function (Commons/Util.qml:61-63), so a hand-edit can
+        // repeat the id; and the bar renders a bare id string as a widget
+        // while updateEntryInline matches on `arr[i].id` (shell.qml:379), so
+        // a string entry is invisible to the write. Proceeding anyway fails
+        // silently either way -- copying one entry's settings onto another
+        // erases keys (shell.qml:376-389 loops without a break), and a write
+        // that matches nothing leaves a change that looks applied until the
+        // next restart. So: Service.qml's historyUnreadable posture. Stop
+        // writing, name the fault once, leave the file alone. Only saving
+        // settings stops; countdown, history and in-session adjustment are
+        // untouched.
+        //
+        // This gives up the top-level `plugins` array updateEntryInline would
+        // also search (shell.qml:390-400), deliberately and at no cost: a
+        // plugin enabled only there has no bar widget, so nothing can reach
+        // this function. Do not re-add the fallthrough -- that loop has no
+        // break either, so entering it unsurveyed would rewrite two entries at
+        // once.
+        var config = bar.shell.shellConfig
+        var census = Model.surveyBarEntries(config && config.bar ? config.bar.layout : null,
+                                            root.moduleName)
+        if (census.total !== 1 || census.writable !== 1) {
+            if (census.total > 1)
+                warnAboutEntry("duplicate", "'" + root.moduleName + "' appears " + census.total
+                    + " times in bar.layout, so there is no single entry to save to")
+            else if (census.total === 1)
+                warnAboutEntry("stringEntry", "'" + root.moduleName + "' is listed in bar.layout"
+                    + " as a bare id string; give it the object form { \"id\": \""
+                    + root.moduleName + "\" } so settings can be written to it")
+            else
+                warnAboutEntry("noEntry", "no writable '" + root.moduleName + "' entry was found"
+                    + " in bar.layout")
             return
         }
-        pausedMs = endsAt - nowMs
-        running = false
-    }
 
-    function reset() {
-        if (!started) return
-        running = false
-        started = false
-        // No history row. Never auto-starts.
-    }
-
-    function toggleRunning() {
-        if (running) pause()
-        else start()
-    }
-
-    function complete() {
-        history = Model.pushSession(history, { startedAt: sessionStartedAt, minutes: sessionMinutes })
-        persistHistory()
-        if (notifyEnabled) sendCompletionNotification()
-        reset()
-    }
-
-    // --- duration adjustment, panel +/- and wheel --------------------
-    // Both route through Model.adjustSession so the clamp and the
-    // never-shorten-past-what-is-left guard live once, and are testable.
-
-    // Live remainder in milliseconds. Date.now(), not nowMs: the ticker
-    // advances nowMs once a second, so a guard measured against it is up to a
-    // second stale -- enough for a -5 to be allowed when it would in fact
-    // land the deadline in the past.
-    function liveRemainingMs() {
-        if (running) return endsAt - Date.now()
-        if (started) return pausedMs
-        return durationMinutes * 60 * 1000
-    }
-
-    function canAdjust(delta) {
-        if (idle) return Model.stepMinutes(durationMinutes, delta) !== durationMinutes
-        // Reading nowMs is the binding dependency that makes the panel's +/-
-        // `enabled` re-evaluate each tick; the arithmetic below deliberately
-        // does not use it (see liveRemainingMs).
-        var tick = nowMs
-        return tick >= 0 && Model.adjustSession(sessionMinutes, liveRemainingMs(), delta) !== null
-    }
-
-    // Idle writes durationMinutes, same as any other pending-setting change.
-    // Started writes sessionMinutes instead -- the comment on that property
-    // above says a mid-session *config* edit can't relabel history; this is
-    // the deliberate exception, an explicit user nudge, applied live to the
-    // running deadline (endsAt) or banked remainder (pausedMs) so the
-    // countdown reflects it immediately.
-    function adjustMinutes(delta) {
-        if (idle) {
-            durationMinutes = Model.stepMinutes(durationMinutes, delta)
-            return
+        // Already what the entry says. Cheap, but it also covers a hand-edit
+        // to shell.json that landed inside the debounce window and was
+        // adopted: there is nothing of ours left to write.
+        var unchanged = true
+        for (var patchedKey in patch) {
+            if (setting(patchedKey) !== patch[patchedKey]) {
+                unchanged = false
+                break
+            }
         }
-        var step = Model.adjustSession(sessionMinutes, liveRemainingMs(), delta)
-        if (!step) return
-        sessionMinutes = step.minutes
-        if (running) endsAt += step.appliedMs
-        else pausedMs += step.appliedMs
+        if (unchanged) return
+
+        // Every other key is carried over, not just the ones this plugin
+        // knows about: the host replaces the whole entry with what it is
+        // handed, and the bar derives `settings` from the entry minus `id`
+        // (BarModel.entrySettings). A key dropped here is dropped from the
+        // user's shell.json -- `notify` included.
+        var entry = { id: root.moduleName }
+        for (var key in root.settings) if (key !== "id") entry[key] = root.settings[key]
+        for (var patchKey in patch) entry[patchKey] = patch[patchKey]
+
+        // Local first, as the clock widget does. `settings` is what
+        // pushSettings() reads, so leaving it stale would let a later push
+        // re-announce old values and stomp the change. The write comes
+        // straight back through shellConfig -> the bar -> `settings` carrying
+        // this same value, which is why the loop settles: applySettings only
+        // acts on a value it has not already applied.
+        //
+        // Its return value is ignored on purpose. With a unique writable
+        // target established above, `false` means only that the entry already
+        // held what we were about to write (shell.qml:402) -- the value
+        // compare above cannot rule that out, because it reads this view's
+        // `settings`, which may lag the file.
+        root.settings = entry
+        bar.shell.updateEntryInline(root.moduleName, entry)
     }
 
-    Timer {
-        id: ticker
-        interval: 1000
-        repeat: true
-        running: root.running
-        onTriggered: {
-            root.nowMs = Date.now()
-            if (root.remainingSeconds <= 0) root.complete()
-        }
+    // Routes a refusal through the service's per-reason latch, so each
+    // distinct fault is named once per service instance rather than once per
+    // wheel notch or once per monitor. The consequence is the same for all of
+    // them, so it is stated here instead of in every message.
+    function warnAboutEntry(reason, problem) {
+        if (!timer || typeof timer.claimEntryWarning !== "function") return
+        if (!timer.claimEntryWarning(reason)) return
+        console.warn("pomodoro:", problem + "; settings changes will not be saved to shell.json")
     }
 
-    // --- notification -------------------------------------------------
-    // argv, not a shell string: execDetached takes the arguments directly, so
-    // nothing here is parsed by a shell and no argument needs quoting. Also
-    // drops the dependency on bar.run being present.
-    function sendCompletionNotification() {
-        Quickshell.execDetached(["notify-send", "-a", "Pomodoro", "-u", "normal",
-                                 "Pomodoro complete",
-                                 root.sessionMinutes + " minute session done"])
+    // Rebinds when the service mounts or `_syncServices` tears it down; a
+    // null target is inert, so no guard is needed here.
+    Connections {
+        target: root.timer
+        function onSettingsCommitted(patch) { root.persistSettings(patch) }
     }
 
-    // --- persistence, section 8 --------------------------------------
-    readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy"
-    readonly property string historyPath: stateDir + "/pomodoro.json"
+    // Until the service mounts, `timer` is null and the widget shows the idle
+    // hourglass -- the same thing a mounted-but-unstarted timer shows, so the
+    // bar never flashes a bogus countdown. A click in that window still opens
+    // the panel; every control in there is guarded on `timer` and reads as
+    // disabled, which is the honest rendering of "no timer yet".
+    readonly property string barText: !timer || timer.idle ? idleGlyph
+        : (timer.mode === Model.MODE_POMODORO
+           && (timer.phase === Model.PHASE_SHORT || timer.phase === Model.PHASE_LONG)
+           ? String.fromCharCode(0xf0f4) + " " : "") + Model.mmss(timer.remainingSeconds)
 
-    // ponytail: this widget's state (including history) is per bar-widget
-    // instance, and a bar surface exists per monitor — so two monitors run
-    // two independent timers, fire two completion notifications, and both
-    // whole-file-write the same pomodoro.json with last-writer-wins,
-    // silently losing whichever session's row lost the race. Fine for the
-    // common single-bar desktop this plan targets; upgrade path is a
-    // `service` kind + keepLoaded owning the one true timer/history if
-    // multi-monitor ever matters (reopens plan decision 6 — plan owner's
-    // call, not fixed here).
-
-    // Ensures the state directory exists before any write. Read-on-load
-    // tolerates a missing file/dir fine (FileView + Model.parseHistory both
-    // degrade to []); this only matters for the first write.
-    Process {
-        id: ensureStateDirProc
-        command: ["mkdir", "-p", root.stateDir]
-        running: false
-    }
-
-    // True once we know what is on disk -- either it loaded, or it definitively
-    // wasn't there. Until then `history` is an empty placeholder that merely
-    // looks like an empty log, and writing it would publish that guess over
-    // real data.
-    property bool historyLoaded: false
-
-    // The file exists and holds something, but parseHistory rejected all of
-    // it. That is not an empty log; it is a log we failed to read (truncated
-    // write, hand-edit typo, older format). Overwriting it would destroy the
-    // only copy, so persistence stops until a human resolves it.
-    property bool historyUnreadable: false
-
-    // atomicWrites so a shell crash mid-write leaves the previous file
-    // intact rather than a truncated one. printErrors stays off because the
-    // history file is legitimately absent on first run (same setting as
-    // Clipboard.qml's identically-shaped FileView); onSaveFailed covers the
-    // write side that suppression would otherwise hide.
-    FileView {
-        id: historyFile
-        path: root.historyPath
-        watchChanges: false
-        atomicWrites: true
-        printErrors: false
-        onLoaded: {
-            var raw = text()
-            var parsed = Model.parseHistory(raw, Model.HISTORY_CAP)
-            root.history = parsed
-            // Distinguishing the two ways of arriving at [] is the whole point:
-            // an absent or genuinely empty file is safe to overwrite, a file
-            // with bytes we couldn't parse is not.
-            root.historyUnreadable = parsed.length === 0 && raw.trim().length > 0
-            if (root.historyUnreadable)
-                console.warn("pomodoro: could not parse", root.historyPath,
-                             "- leaving it untouched; sessions will not be saved until it is fixed or removed")
-            root.historyLoaded = true
-        }
-        onLoadFailed: {
-            // Absent file on first run is the normal path, not an error.
-            root.history = []
-            root.historyUnreadable = false
-            root.historyLoaded = true
-        }
-        onSaveFailed: function (error) { console.warn("pomodoro: history save failed", error) }
-    }
-
-    function persistHistory() {
-        // Never write ahead of the load. complete() can only fire a full
-        // session after startup, so the race is not reachable through the UI
-        // today -- but the guard costs nothing and the failure it prevents
-        // (publishing a placeholder [] over a real log) is unrecoverable.
-        if (!historyLoaded) return
-        if (historyUnreadable) {
-            console.warn("pomodoro: refusing to overwrite unparseable", root.historyPath)
-            return
-        }
-        historyFile.setText(Model.serializeHistory(root.history))
-    }
-
-    // --- panel routing contract, section 5 --------------------------------
+    // --- panel routing contract -------------------------------------------
     // Must live on this bar-widget root, not the nested panel — Bar.qml's
     // popout coordinator (findPanelWidget / requestPopout) looks here.
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
@@ -285,10 +259,10 @@ BarWidget {
     }
 
     // Injects what Panel.qml needs onto the loaded instance, same shape as
-    // the clock/weather plugins. Only bar/settings/anchorItem/hostWidget are
-    // pushed; timer state and callbacks are read live off `hostWidget`
-    // instead, because this runs only on bar/settings changes while the
-    // state changes every tick.
+    // the clock/weather plugins. `hostWidget` is the panel's *identity* (the
+    // bar-widget root the popout coordinator keys off); `timer` is where it
+    // reads state and drives transitions. They are separate on purpose --
+    // there is one panel per monitor but one timer for all of them.
     function injectPanel() {
         var target = panelLoader.item
         if (!target) return
@@ -296,15 +270,30 @@ BarWidget {
         if ("settings" in target) target.settings = root.settings
         if ("anchorItem" in target) target.anchorItem = button
         if ("hostWidget" in target) target.hostWidget = root
+        if ("timer" in target) target.timer = root.timer
     }
 
-    onBarChanged: injectPanel()
-    onSettingsChanged: {
-        // Re-assert the setting: durationMinutes' initial binding is gone
-        // after the first write (idle or not), so a shell.json edit only
-        // reaches it if we reassign here.
-        durationMinutes = Model.validMinutesOr(setting("minutes", Model.DEFAULT_MINUTES), Model.DEFAULT_MINUTES)
+    // Set by the first settings injection; see pushSettings().
+    property bool settingsReceived: false
+
+    onBarChanged: {
+        warnIfNoServiceApi()
         injectPanel()
+        pushSettings()
+    }
+
+    onSettingsChanged: {
+        settingsReceived = true
+        injectPanel()
+        pushSettings()
+    }
+
+    // `timer` is a pushed value on the panel, not a binding, so the panel
+    // would otherwise keep a stale (or destroyed) reference when the service
+    // mounts late or `_syncServices` tears it down. Re-inject on every change.
+    onTimerChanged: {
+        injectPanel()
+        pushSettings()
     }
 
     implicitWidth: button.implicitWidth
@@ -315,7 +304,7 @@ BarWidget {
         anchors.fill: parent
         bar: root.bar
         text: root.barText
-        dimmed: root.paused
+        dimmed: !!root.timer && root.timer.paused
         onPressed: function (b) {
             // Left click only — no right/middle click actions.
             if (b === Qt.LeftButton) root.togglePanel()
@@ -333,7 +322,10 @@ BarWidget {
         }
     }
 
-    Component.onCompleted: {
-        ensureStateDirProc.running = true
-    }
+    // `bar` is injected after construction (Bar.qml injectProps), so this is
+    // normally a no-op and onBarChanged does the work. Kept for a host that
+    // passes `bar` as an initial property instead, where that signal never
+    // fires; the warning is guarded on `bar`, so on a normal host this is
+    // silent and onBarChanged does the talking.
+    Component.onCompleted: warnIfNoServiceApi()
 }
