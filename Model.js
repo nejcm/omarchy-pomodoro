@@ -143,6 +143,73 @@ function arm(phase, settings) {
     return { phase: phase, minutes: phaseMinutes(phase, settings) };
 }
 
+// Starts an idle or paused session. The caller supplies the clock instant in
+// `state.nowMs`; this only returns the state to apply. A running session, an
+// invalid clock, or an invalid paused remainder is a no-op.
+function start(state) {
+    var st = (state && typeof state === "object") ? state : {};
+    if (st.running === true || typeof st.nowMs !== "number" || !isFinite(st.nowMs))
+        return { changed: false };
+
+    var resumed = st.started === true;
+    var minutes = validMinutesOr(st.durationMinutes, DEFAULT_MINUTES);
+    var ms = resumed ? st.pausedMs : minutes * 60 * 1000;
+    if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return { changed: false };
+    if (resumed && (typeof st.sessionStartedAt !== "number" || !isFinite(st.sessionStartedAt) ||
+                    typeof st.sessionMinutes !== "number" || !isFinite(st.sessionMinutes)))
+        return { changed: false };
+
+    var endsAt = st.nowMs + ms;
+    if (!isFinite(endsAt)) return { changed: false };
+    return {
+        changed: true,
+        running: true,
+        started: true,
+        sessionStartedAt: resumed ? st.sessionStartedAt : st.nowMs,
+        sessionMinutes: resumed ? st.sessionMinutes : minutes,
+        nowMs: st.nowMs,
+        endsAt: endsAt
+    };
+}
+
+// Pauses a running session, or reports that its deadline has already passed.
+// The latter is a decision for Service.qml to hand to complete(false), not a
+// completion side effect. `state.nowMs` is the instant being applied.
+// The caller supplies the instant; a stale `state.nowMs` banks the wrong
+// remainder.
+// The deadline can already have passed: remainingSeconds reaches 0 the
+// moment Date.now() > endsAt, but complete() only runs on the next
+// tick, and ticks land late. Pausing inside that gap used to bank a
+// zero remainder and stop the ticker, stranding the widget on a dimmed
+// 00:00 forever -- no notification, no history row, and a reset from
+// there would discard a session that had in fact finished. Finish it
+// instead; a session past its deadline is complete, not pausable.
+// Pause still returns stopped when completion would normally
+// auto-start the next phase.
+function pause(state) {
+    var st = (state && typeof state === "object") ? state : {};
+    if (st.running !== true || typeof st.nowMs !== "number" || !isFinite(st.nowMs) ||
+        typeof st.endsAt !== "number" || !isFinite(st.endsAt))
+        return { changed: false };
+
+    var remainingMs = st.endsAt - st.nowMs;
+    if (!isFinite(remainingMs)) return { changed: false };
+    if (remainingMs <= 0) return { changed: true, complete: true, nowMs: st.nowMs };
+    return { changed: true, complete: false, nowMs: st.nowMs, pausedMs: remainingMs, running: false };
+}
+
+// Abandons a started session and re-arms work. History and cycle position are
+// outside this decision, so reset never writes or advances them.
+// Back to work whatever was abandoned: reset is the user saying "not
+// this", and leaving them armed on the break they just rejected is a
+// worse answer than the phase every cycle begins from. No history row. Never
+// auto-starts.
+function reset(state) {
+    var st = (state && typeof state === "object") ? state : {};
+    if (st.started !== true) return { changed: false };
+    return { changed: true, running: false, started: false, phase: PHASE_WORK };
+}
+
 // What a finished session should cause. Pure: the caller pushes the log row,
 // fires the notification and installs `next` -- this only decides.
 //
@@ -443,5 +510,5 @@ function serializeHistory(history) {
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, MODE_TIMER: MODE_TIMER, MODE_POMODORO: MODE_POMODORO, PHASE_WORK: PHASE_WORK, PHASE_SHORT: PHASE_SHORT, PHASE_LONG: PHASE_LONG, DEFAULT_BREAK_MINUTES: DEFAULT_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES: DEFAULT_LONG_BREAK_MINUTES, MIN_CYCLES: MIN_CYCLES, MAX_CYCLES: MAX_CYCLES, DEFAULT_CYCLES: DEFAULT_CYCLES, mmss: mmss, validMinutesOr: validMinutesOr, validModeOr: validModeOr, validCyclesOr: validCyclesOr, phaseMinutes: phaseMinutes, nextPhase: nextPhase, phaseLabel: phaseLabel, cyclePosition: cyclePosition, completion: completion, skip: skip, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, groupByDay: groupByDay, parseHistory: parseHistory, serializeHistory: serializeHistory, surveyBarEntries: surveyBarEntries };
+    module.exports = { HISTORY_CAP: HISTORY_CAP, MIN_MINUTES: MIN_MINUTES, MAX_MINUTES: MAX_MINUTES, DEFAULT_MINUTES: DEFAULT_MINUTES, MODE_TIMER: MODE_TIMER, MODE_POMODORO: MODE_POMODORO, PHASE_WORK: PHASE_WORK, PHASE_SHORT: PHASE_SHORT, PHASE_LONG: PHASE_LONG, DEFAULT_BREAK_MINUTES: DEFAULT_BREAK_MINUTES, DEFAULT_LONG_BREAK_MINUTES: DEFAULT_LONG_BREAK_MINUTES, MIN_CYCLES: MIN_CYCLES, MAX_CYCLES: MAX_CYCLES, DEFAULT_CYCLES: DEFAULT_CYCLES, mmss: mmss, validMinutesOr: validMinutesOr, validModeOr: validModeOr, validCyclesOr: validCyclesOr, phaseMinutes: phaseMinutes, nextPhase: nextPhase, phaseLabel: phaseLabel, cyclePosition: cyclePosition, start: start, pause: pause, reset: reset, completion: completion, skip: skip, stepMinutes: stepMinutes, adjustSession: adjustSession, wheelSteps: wheelSteps, pushSession: pushSession, countToday: countToday, groupByDay: groupByDay, parseHistory: parseHistory, serializeHistory: serializeHistory, surveyBarEntries: surveyBarEntries };
 }

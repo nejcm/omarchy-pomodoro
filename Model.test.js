@@ -56,6 +56,80 @@ assert.strictEqual(M.adjustSession(25, Infinity, -5), null); // non-finite remai
 assert.deepStrictEqual(M.adjustSession(178, 60000, 5), { minutes: 180, appliedMs: 2 * 60 * 1000 });
 assert.deepStrictEqual(M.adjustSession(4, 10 * 60 * 1000, -5), { minutes: 1, appliedMs: -3 * 60 * 1000 });
 
+// -- start --
+(function () {
+    var idle = M.start({
+        running: false, started: false, durationMinutes: 25, nowMs: 1700000000000
+    });
+    assert.deepStrictEqual(idle, {
+        changed: true,
+        running: true,
+        started: true,
+        sessionStartedAt: 1700000000000,
+        sessionMinutes: 25,
+        nowMs: 1700000000000,
+        endsAt: 1700001500000
+    });
+    assert.strictEqual(M.start({
+        running: false, started: false, durationMinutes: 9999, nowMs: 1700000000000
+    }).sessionMinutes, 25);
+
+    // Resume uses the exact banked remainder and keeps the session snapshot.
+    assert.deepStrictEqual(M.start({
+        running: false, started: true, pausedMs: 1001,
+        durationMinutes: 99, sessionStartedAt: 10, sessionMinutes: 25,
+        nowMs: 2000
+    }), {
+        changed: true,
+        running: true,
+        started: true,
+        sessionStartedAt: 10,
+        sessionMinutes: 25,
+        nowMs: 2000,
+        endsAt: 3001
+    });
+
+    assert.deepStrictEqual(M.start({ running: true, nowMs: 2000 }), { changed: false });
+    assert.deepStrictEqual(M.start({ started: false, durationMinutes: 25 }), { changed: false });
+    assert.deepStrictEqual(M.start({ started: true, pausedMs: NaN, nowMs: 2000 }), { changed: false });
+    assert.deepStrictEqual(M.start({ started: true, pausedMs: 1000, sessionStartedAt: NaN, sessionMinutes: 25, nowMs: 2000 }), { changed: false });
+    assert.deepStrictEqual(M.start({ started: true, pausedMs: Number.MAX_VALUE, sessionStartedAt: 1, sessionMinutes: 25, nowMs: Number.MAX_VALUE }), { changed: false });
+    assert.deepStrictEqual(M.start(null), { changed: false });
+})();
+
+// -- pause --
+(function () {
+    // Keep the millisecond remainder. Rounding this to display seconds would
+    // inflate every pause/resume cycle.
+    assert.deepStrictEqual(M.pause({ running: true, endsAt: 5001, nowMs: 4000 }), {
+        changed: true, complete: false, nowMs: 4000, pausedMs: 1001, running: false
+    });
+    assert.deepStrictEqual(M.pause({ running: true, endsAt: 4000, nowMs: 4000 }), {
+        changed: true, complete: true, nowMs: 4000
+    });
+    assert.deepStrictEqual(M.pause({ running: true, endsAt: 3999, nowMs: 4000 }), {
+        changed: true, complete: true, nowMs: 4000
+    });
+
+    assert.deepStrictEqual(M.pause({ running: false, endsAt: 5001, nowMs: 4000 }), { changed: false });
+    assert.deepStrictEqual(M.pause({ running: true, endsAt: 5001, nowMs: Infinity }), { changed: false });
+    assert.deepStrictEqual(M.pause({ running: true, endsAt: Infinity, nowMs: 4000 }), { changed: false });
+    assert.deepStrictEqual(M.pause({ running: true, endsAt: Number.MAX_VALUE, nowMs: -Number.MAX_VALUE }), { changed: false });
+    assert.deepStrictEqual(M.pause(undefined), { changed: false });
+})();
+
+// -- reset --
+(function () {
+    assert.deepStrictEqual(M.reset({ started: true, running: true, phase: M.PHASE_LONG }), {
+        changed: true, running: false, started: false, phase: M.PHASE_WORK
+    });
+    assert.deepStrictEqual(M.reset({ started: true, running: false, phase: M.PHASE_SHORT }), {
+        changed: true, running: false, started: false, phase: M.PHASE_WORK
+    });
+    assert.deepStrictEqual(M.reset({ started: false, running: false, phase: M.PHASE_SHORT }), { changed: false });
+    assert.deepStrictEqual(M.reset(null), { changed: false });
+})();
+
 // -- wheelSteps --
 assert.deepStrictEqual(M.wheelSteps(0, 120), { steps: 1, remainder: 0 }); // one notch
 assert.deepStrictEqual(M.wheelSteps(0, -120), { steps: -1, remainder: 0 });

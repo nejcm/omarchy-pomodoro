@@ -230,50 +230,48 @@ Item {
 
     // --- transitions -------------------------------------------------------
     function start() {
-        if (running) return
-        var ms = started ? pausedMs : durationMinutes * 60 * 1000
-        if (!started) {
-            started = true
-            sessionStartedAt = Date.now()
-            sessionMinutes = durationMinutes
-        }
-        nowMs = Date.now()
-        endsAt = nowMs + ms
-        running = true
+        var decision = Model.start({
+            running: root.running,
+            started: root.started,
+            pausedMs: root.pausedMs,
+            durationMinutes: root.durationMinutes,
+            sessionStartedAt: root.sessionStartedAt,
+            sessionMinutes: root.sessionMinutes,
+            nowMs: Date.now()
+        })
+        if (!decision.changed) return
+        started = decision.started
+        sessionStartedAt = decision.sessionStartedAt
+        sessionMinutes = decision.sessionMinutes
+        nowMs = decision.nowMs
+        endsAt = decision.endsAt
+        running = decision.running
     }
 
     function pause() {
-        if (!running) return
-        // Refresh nowMs before banking the remainder: pausing before the
-        // first tick after a resume would otherwise store a stale value.
-        nowMs = Date.now()
-        // The deadline can already have passed: remainingSeconds reaches 0 the
-        // moment Date.now() > endsAt, but complete() only runs on the next
-        // tick, and ticks land late. Pausing inside that gap used to bank a
-        // zero remainder and stop the ticker, stranding the widget on a dimmed
-        // 00:00 forever -- no notification, no history row, and a reset from
-        // there would discard a session that had in fact finished. Finish it
-        // instead; a session past its deadline is complete, not pausable.
-        if (endsAt - nowMs <= 0) {
-            // Pause still returns stopped when completion would normally
-            // auto-start the next phase.
+        var decision = Model.pause({
+            running: root.running,
+            endsAt: root.endsAt,
+            // Use the live instant; root.nowMs may still be stale after the last tick.
+            nowMs: Date.now()
+        })
+        if (!decision.changed) return
+        nowMs = decision.nowMs
+        if (decision.complete) {
+            // A pause that finds completion must not auto-start the next phase.
             complete(false)
             return
         }
-        pausedMs = endsAt - nowMs
-        running = false
+        pausedMs = decision.pausedMs
+        running = decision.running
     }
 
     function reset() {
-        if (!started) return
-        running = false
-        started = false
-        // Back to work whatever was abandoned: reset is the user saying "not
-        // this", and leaving them armed on the break they just rejected is a
-        // worse answer than the phase every cycle begins from. The cycle
-        // position is untouched -- it lives in history, which this does not
-        // write. No history row. Never auto-starts.
-        phase = Model.PHASE_WORK
+        var decision = Model.reset({ started: root.started })
+        if (!decision.changed) return
+        running = decision.running
+        started = decision.started
+        phase = decision.phase
     }
 
     function toggleRunning() {
